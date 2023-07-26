@@ -1,0 +1,386 @@
+---
+title: "Data Preparation - Modelling"
+output: html_document
+---
+
+
+
+
+#### Set up
+
+
+```{r Set up}
+
+#clean start:
+rm(list = ls());gc()
+
+#libraries
+library(stringr)      #For some variable creation
+library(lubridate)    #For working with dates
+library(openxlsx)     #For converting Excel's numerics to date-times
+library(readxl)       #For reading excel files
+library(plyr)         #for rbind.fill
+library(purrr)        #For map functions
+library(dplyr)
+
+#file paths
+base_path <- "C:/Users/jtodd/OneDrive - Bond University/LBP/AJA/"
+raw_data_path <- paste0(base_path, "Data/Extracted/")
+proc_data_path <- paste0(base_path, "Data/Processed/")
+analysis_data_path <- paste0(base_path, "Data/Pre-Analysis/")
+
+```
+
+
+
+#### Data Preparation
+
+Data Preparation:
+* Load data with tweaks
+* Remove presentations of individuals under the age of 18
+* Standardise dates and times
+
+
+
+```{r Load FN Data}
+#Load FirstNet data
+fn_data <- read.csv(file = paste0(proc_data_path, "FirstNet_Presentations.csv"), 
+                    stringsAsFactors = FALSE)
+fn_meds <- read.csv(file = paste0(proc_data_path, "FirstNet_Medications.csv"),
+                    stringsAsFactors = FALSE)
+fn_physio <- read_excel(path = paste0(raw_data_path, "FirstNet Physio 2019-2021 deidentified.xlsx"))
+
+#Physio data requires brief tweaking to match the processed files
+fn_physio$combined_id <- paste0(fn_physio$`Project ID`, "-", fn_physio$`ED Arrival Date/Time`)
+fn_physio <- fn_physio[fn_physio$`Project ID` != 76,]
+```
+
+```{r Filtering - Patients under 18}
+fn_data <- subset(fn_data, Age >= 18)
+```
+
+
+
+```{r Recoding - Inpatient and ED Times}
+
+#Fixing the INP.Admit.date.time and INP.Discharge.date.time for FirstNet
+fn_data$INP.Admit.date.time <- convertToDateTime(as.numeric(fn_data$INP.Admit.date.time))
+fn_data$INP.Discharge.date.time <- convertToDateTime(as.numeric(fn_data$INP.Discharge.date.time))
+
+#Reformat to be lubridate classes
+fn_data$INP.Admit.date.time <- ymd_hms(fn_data$INP.Admit.date.time)
+fn_data$INP.Discharge.date.time <- ymd_hms(fn_data$INP.Discharge.date.time)
+
+#Also ED times for FirstNet
+fn_data$ED.Arrival.Date.Time <- ymd_hms(fn_data$ED.Arrival.Date.Time)
+fn_data$ED.Departure.date.time <- ymd_hms(fn_data$ED.Departure.date.time)
+
+#Also change FirstNet orders data: need order date to be a date
+fn_meds$Ordered.Date <- ymd_hms(fn_meds$Ordered.Date)
+
+
+#Adjust the times at which consultations were requested
+fn_physio$`Consult requested date/time` <- convertToDateTime(as.numeric(fn_physio$`Consult requested date/time`))
+fn_physio$`Consult requested date/time` <- ymd_hms(fn_physio$`Consult requested date/time`)
+fn_physio$Consult_Req_Time <- fn_physio$`Consult requested date/time`
+
+```
+
+
+```{r Recoding - LOS}
+#Modify the LOS fields that only occasionally have values - need to convert to numeric
+fn_data$ED.SS.LOS.Hrs <- ifelse(fn_data$ED.SS.LOS.Hrs == "NULL", 0, as.numeric(fn_data$ED.SS.LOS.Hrs))
+fn_data$INP.LOS.Hrs <- ifelse(fn_data$INP.LOS.Hrs == "NULL", 0, as.numeric(fn_data$INP.LOS.Hrs))
+```
+
+
+#### Feature Construction
+
+* Define the outcome variable (inpatient admission)
+* Define the candidate independent variables
+
+```{r Dependent Variable - Inpatient Admission}
+#If inpatient los is at least one hour longer than short stay, treating that as a real inpatient stay
+fn_data$Inp_Outcome <- ifelse(fn_data$Departure.destination == "INP" & fn_data$INP.LOS.Hrs > (fn_data$ED.SS.LOS.Hrs + 1),
+                              1, 0)
+
+```
+
+Variables:
+
+Demographic:
+- Age (continuous)
+- Gender (binary)
+
+Presentation timing
+- OutsideWorkingHours (binary)
+- Weekend (binary)
+
+Mode of arrival
+- QAS_Arrival (binary)
+
+Type of back pain
+- LBP_Type (ternary)
+- LBP_Sinister (binary)
+- LBP_Radicular (binary)
+- LBP_NS (binary)
+
+Imaging
+- Imaging_Any (binary)
+- Imaging_CT (binary)
+- Imaging_XR (binary)
+- Imaging_MR (binary)
+
+Pain Medication
+- Med_Analgesic (binary)
+- Med_NSAID (binary)
+- Med_Opiate (binary)
+- Med_Relaxant (binary)
+- Med_Benzo (binary)
+- Med_Antiepileptic (binary)
+- Med_Antidepress (binary)
+- Med_OralCortico (binary)
+
+Other
+- Physio_Review (binary)
+- ED_los (continuous)
+- ATS_1_2 (binary)
+- ATS_3 (binary)
+- ATS_4_5 (binary)
+
+
+
+```{r Independent Variables - Demographics}
+#Define names:
+demo_vars <- c("Age_cont", "Gender")
+
+#Age
+fn_data$Age_cont <- fn_data$Age
+
+#Gender
+fn_data$Gender <- fn_data$Gender #redundant, but explicit anyway
+```
+
+
+```{r Independent Variables - Timing}
+#Define names:
+timing_vars <- c("Weekend", "Not_working_hrs")
+
+#Weekend presentation:
+fn_data$Weekend <- 1*(wday(fn_data$ED.Arrival.Date.Time, label = T, abbr = F) %in% c("Saturday","Sunday"))
+
+#Outside working hour pres:
+fn_data$Not_working_hrs <- 1*(hour(fn_data$ED.Arrival.Date.Time) %in% 8:16)
+fn_data$Not_working_hrs[hour(fn_data$ED.Arrival.Date.Time) == 17 & minute(fn_data$ED.Arrival.Date.Time) == 0] <- 1
+fn_data$Not_working_hrs <- fn_data$Not_working_hrs * (1 - fn_data$Weekend)
+fn_data$Not_working_hrs <- 1-fn_data$Not_working_hrs
+```
+
+
+```{r Independent Variables - Mode of Arrival}
+#define names:
+arrival_vars <- c("QAS_arrival")
+
+#QAS arrival
+fn_data$QAS_arrival <- 1*str_detect(string = tolower(fn_data$Arrival.Mode), pattern = "ambulance")
+```
+
+
+```{r Independent Variables - Diagnosis}
+#define names
+type_vars <- c("LBP_type", "LBP_Sinister", "LBP_Radicular", "LBP_NS")
+
+#LBP type - needs a bit of work, but only need the final column I create
+fn_nslbp_codes <- c("278862001","91957002","161891005","424270008",
+                    "134407002","278860009","209571002","161894002",
+                    "26538006","20021007","135860001","279039007",
+                    "300956001","282766005","239880009","209565008",
+                    "279040009","34789001","61486003","203095000",
+                    "209548004","249921008","262965006","262975009")
+fn_radicular_codes <- c("247366003","307176005","307177001","24300005",
+                        "86269002","202794004","46960006","202735001",
+                        "128196005","23056005","18347007")
+fn_sinister_codes <- c("309083007",
+                       "19284003","192970008","207957008","308758008",
+                       "426646004","212360005","11437003","284062002",
+                       "281933002","202728009","2304001","125871005",
+                       "125608002","207986006","230614002","202731005",
+                       "207993005", "44237008", "48956000", "65491009", 
+                       "129166009")
+
+fn_data$LBP_Sinister <- 1*str_detect(string = fn_data$ED.Diagnosis, 
+                                      pattern = paste0(fn_sinister_codes, collapse = "|")) 
+
+fn_data$LBP_Radicular <- (1-fn_data$LBP_Sinister)*str_detect(string = fn_data$ED.Diagnosis, 
+                                       pattern = paste0(fn_radicular_codes, collapse = "|"))
+fn_data$LBP_NS <- (1-fn_data$LBP_Radicular - fn_data$LBP_Sinister)*str_detect(string = fn_data$ED.Diagnosis, 
+                                   pattern = paste0(fn_nslbp_codes, collapse = "|"))
+fn_data$LBP_type <- ifelse(fn_data$LBP_Sinister == 1, "Sinister", 
+                           ifelse(fn_data$LBP_Radicular == 1, "Radicular", "NSLBP"))
+
+
+
+```
+
+
+
+```{r Independent Variables - Imaging}
+#define names
+image_vars <- c("Imaging_Any", "Imaging_CT", "Imaging_XR", "Imaging_MR")
+
+#Load in the data specifying the exact orders relevant for each imaging type
+image_cats <- read.csv(file = paste0(raw_data_path, "Imaging Categories.csv"), stringsAsFactors = FALSE)
+colnames(image_cats)[1] <- "ORDER_CATALOG_MR"
+
+#MR/CT/XR imaging values:
+MR_orders <- image_cats$ORDER_CATALOG_MR
+CT_orders <- image_cats$ORDER_CATALOG_CT
+XR_orders <- image_cats$ORDER_CATALOG_XR
+
+#Clean up empty fields:
+MR_orders <- MR_orders[nchar(MR_orders)>0]
+CT_orders <- CT_orders[nchar(CT_orders)>0]
+XR_orders <- XR_orders[nchar(XR_orders)>0]
+
+
+#going to use a loop, making it easier to follow. 
+fn_data[,c("Imaging_Any","Imaging_CT", "Imaging_XR", "Imaging_MR")] <- 2
+for(i in 1:nrow(fn_data)) {
+  
+  #Current project (not presentation) ID and ED time window
+  cur_proj_id <- fn_data$Project.ID[i]
+  start_ed_time <- fn_data$ED.Arrival.Date.Time[i]
+  end_ed_time <- start_ed_time + seconds(60*60*fn_data$ED.Total.LOS.Hrs[i]) 
+  
+  
+  #Matching data from medication table for same presentation and during ED time (including SSU)
+  cur_orders <- subset(fn_meds, 
+                       (Project.ID == cur_proj_id) & (Ordered.Date < end_ed_time) & (Ordered.Date >= start_ed_time))
+  
+  #Check for matches in the order catalog field
+  fn_data$Imaging_CT[i] <- 1*any(tolower(cur_orders$ORDER_CATALOG) %in% tolower(CT_orders))
+  fn_data$Imaging_MR[i] <- 1*any(tolower(cur_orders$ORDER_CATALOG) %in% tolower(MR_orders))
+  fn_data$Imaging_XR[i] <- 1*any(tolower(cur_orders$ORDER_CATALOG) %in% tolower(XR_orders))
+  fn_data$Imaging_Any[i] <- max(fn_data$Imaging_CT[i], fn_data$Imaging_MR[i], fn_data$Imaging_XR[i])
+  
+  
+}
+
+
+
+```
+
+
+
+```{r Independent Variables - Pain Medication}
+#define names
+med_vars <- c("Med_Analgesic", "Med_NSAIDs", "Med_Opiate", 
+              "Med_Relaxant","Med_Benzo", "Med_Antiepileptic", 
+              "Med_Antidepress", "Med_OralCortico")
+
+
+#Define the medications in each category:
+Analgesics <- c("amiTRIPTYLine","buprenorphine","buprenorphine-naloxone","codeine",
+                "dexamethasone",  "Diazepam","diclofenac","diclofenac topical",
+                "fentanyl","gabapentin","HYDROmorphone","ibuprofen","ketamine",
+                "ketOROLAC","methADONe","midazolam","morphine","naproxen",
+                "orphenadrine","oxycodone","oxycodone-naloxone","paracetamol",
+                "paracetamol-codeine","prednisone","pregabalin","propOFol",
+                "tAPENTadol","tRAMadol") #Everything
+NSAIDs <- c("diclofenac", "diclofenac topical", "ibuprofen", "ketOROLAC", "naproxen")
+Opiates <- c("buprenorphine", "buprenorphine-naloxone", "codeine", "fentanyl", 
+                  "HYDROmorphone", "ketamine", "methADONe", "morphine", "oxycodone",
+                  "oxycodone-naloxone", "paracetamol-codeine", "propOFol", "tAPENTadol",
+                  "tRAMadol")
+Relaxants <- c("orphenadrine", "Diazepam")
+Benzos <- c("Diazepam", "midazolam")
+Antiepileptics <- c("amiTRIPTYLine", "gabapentin", "pregabalin")
+Antidepressants <- c("amiTRIPTYLine")
+Oral_corticos <- c("dexamethasone", "prednisone")
+
+#Initialise variables, loop through each row of data and fill them in
+fn_data[,med_vars] <- 2
+for(i in 1:nrow(fn_data)) {
+  
+  #Current project (not presentation) ID and ED time window
+  cur_proj_id <- fn_data$Project.ID[i]
+  start_ed_time <- fn_data$ED.Arrival.Date.Time[i]
+  end_ed_time <- start_ed_time + seconds(60*60*fn_data$ED.Total.LOS.Hrs[i]) 
+  
+  
+  #Matching data from medication table for same presentation and during ED time (including SSU)
+  cur_orders <- subset(fn_meds, 
+                       (Project.ID == cur_proj_id) & (Ordered.Date < end_ed_time) & (Ordered.Date >= start_ed_time))
+  
+  #Check if there are any matches in the order catalog
+  fn_data$Med_Analgesic[i] <- 1*any(tolower(cur_orders$ORDER_CATALOG) %in% tolower(Analgesics))
+  fn_data$Med_NSAIDs[i] <- 1*any(tolower(cur_orders$ORDER_CATALOG) %in% tolower(NSAIDs))
+  fn_data$Med_Opiate[i] <- 1*any(tolower(cur_orders$ORDER_CATALOG) %in% tolower(Opiates))
+  fn_data$Med_Relaxant[i] <- 1*any(tolower(cur_orders$ORDER_CATALOG) %in% tolower(Relaxants))
+  fn_data$Med_Benzo[i] <- 1*any(tolower(cur_orders$ORDER_CATALOG) %in% tolower(Benzos))
+  fn_data$Med_Antiepileptic[i] <- 1*any(tolower(cur_orders$ORDER_CATALOG) %in% tolower(Antiepileptics))
+  fn_data$Med_Antidepress[i] <- 1*any(tolower(cur_orders$ORDER_CATALOG) %in% tolower(Antidepressants))
+  fn_data$Med_OralCortico[i] <- 1*any(tolower(cur_orders$ORDER_CATALOG) %in% tolower(Oral_corticos))
+  
+}
+
+
+
+```
+
+
+```{r Independent Variables - Other}
+#define names
+other_vars <- c("Physio_Review", "ED_los", "ATS_1_2", "ATS_3", "ATS_4_5")
+
+
+
+#Physio review
+fn_data$Physio_Review <- 2 #Initialising
+for(i in 1:nrow(fn_data)) {
+  
+  
+  #Current presentation ID and ED time window
+  cur_proj_id <- fn_data$Project.ID[i]
+  start_ed_time <- fn_data$ED.Arrival.Date.Time[i]
+  end_ed_time <- start_ed_time + seconds(60*60*fn_data$ED.Total.LOS.Hrs[i]) 
+  
+  
+  #Matching data from medication table for same presentation and during ED time (including SSU)
+  cur_data <- subset(fn_physio,
+                     (`Project ID` == cur_proj_id)  & (Consult_Req_Time < end_ed_time) & (Consult_Req_Time >= start_ed_time))
+  
+  #Check for any physio consults and record
+  fn_data$Physio_Review[i] <- 1*any(str_detect(string = tolower(cur_data$`AH Consult`), pattern = "physiotherapy"))
+  
+  
+}
+
+#ED LOS - total LOS hrs has good agreement with the approach of adding SS and Actual ED together, so just use total
+fn_data$ED_los <- fn_data$ED.Total.LOS.Hrs
+
+
+#ATS_1_2, ATS_4_5, ATS_3
+fn_data$ATS_1_2 <- ifelse(fn_data$ATS <= 2, 1, 0)
+fn_data$ATS_3 <- ifelse(fn_data$ATS == 3, 1, 0)
+fn_data$ATS_4_5 <- ifelse(fn_data$ATS >= 4, 1, 0)
+
+
+```
+
+
+
+#### Save the prepared data
+
+```{r}
+#Reduce the data to the fields of interest
+modelling_data <- fn_data[,c("Inp_Outcome", demo_vars, timing_vars, arrival_vars, 
+                             type_vars,image_vars, med_vars, other_vars)]
+
+#Save: 
+saveRDS(object = modelling_data, file = paste0(analysis_data_path, "inpatient_model_data.rds"))
+
+
+```
+
+

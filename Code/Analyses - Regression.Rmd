@@ -1,0 +1,219 @@
+---
+title: "Inpatient Admission Modelling"
+output: html_document
+---
+
+
+#### Set up
+
+
+```{r Setup}
+#clean start:
+rm(list = ls());gc()
+
+#libraries
+library(mgcv)
+library(purrr)
+library(segmented)
+library(splines)
+library(ResourceSelection)
+library(broom)
+
+#file paths
+base_path <- "C:/Users/jtodd/OneDrive - Bond University/LBP/AJA/"
+raw_data_path <- paste0(base_path, "Data/Extracted/")
+proc_data_path <- paste0(base_path, "Data/Processed/")
+model_data_path <- paste0(base_path, "Data/Pre-Analysis/")
+model_save_path <- paste0(base_path, "Results/")
+
+```
+
+
+#### Load Data and Fit Linear Model
+
+
+```{r}
+model_data <- readRDS(file = paste0(model_data_path, "inpatient_model_data.rds"))
+```
+
+
+All stages of the iterative process followed to arrive at a final model were performed manually to allow for inspection of intermediate results. Comments describe the changes made at each stage. The final model will then have a p-spline for age included.
+
+```{r}
+#Intercept-only model as a starting point
+empty_lr <- glm(formula = Inp_Outcome ~ 1, family = binomial(link = "logit"), data = model_data)
+#Full model (with accompanying issues due to related variables) as upper bound
+full_lr <- glm(formula = Inp_Outcome ~ ., family = binomial(link = "logit"), data = model_data)
+
+
+#1. Compute AIC of candidate variables
+add1_opts <- add1(object = empty_lr, scope = full_lr)
+add1_opts[order(add1_opts$AIC),]
+
+#Add age
+next_lr <- glm(formula = Inp_Outcome ~ Age_cont, family = binomial(link = "logit"), data = model_data)
+# summary(next_lr) #p<0.05
+
+#2. Compute AIC of remaining candidate variables
+add1_opts <- add1(object = next_lr, scope = full_lr)
+add1_opts[order(add1_opts$AIC),]
+
+#Add Imaging (CT)
+next_lr <- glm(formula = Inp_Outcome ~ Age_cont + Imaging_CT, family = binomial(link = "logit"), data = model_data)
+# summary(next_lr) #p<0.05
+
+#3. Compute AIC of remaining candidate variables
+add1_opts <- add1(object = next_lr, scope = full_lr)
+add1_opts[order(add1_opts$AIC),]
+
+#Add Imaging (MR)
+next_lr <- glm(formula = Inp_Outcome ~ Age_cont + Imaging_CT + Imaging_MR, 
+               family = binomial(link = "logit"), data = model_data)
+# summary(next_lr) #p<0.05
+
+#4. Compute AIC of remaining candidate variables
+add1_opts <- add1(object = next_lr, scope = full_lr)
+add1_opts[order(add1_opts$AIC),]
+
+#Add Med_Antiepileptic  
+next_lr <- glm(formula = Inp_Outcome ~ Age_cont + Imaging_CT + Imaging_MR + Med_Antiepileptic, 
+               family = binomial(link = "logit"), data = model_data)
+# summary(next_lr) #p<0.05
+
+#5. Compute AIC of remaining candidate variables
+add1_opts <- add1(object = next_lr, scope = full_lr)
+add1_opts[order(add1_opts$AIC),]
+
+#Add QAS_arrival
+next_lr <- glm(formula = Inp_Outcome ~ Age_cont + Imaging_CT + Imaging_MR + Med_Antiepileptic + QAS_arrival, 
+               family = binomial(link = "logit"), data = model_data)
+# summary(next_lr) #p<0.05
+
+#6. Compute AIC of remaining candidate variables
+add1_opts <- add1(object = next_lr, scope = full_lr)
+add1_opts[order(add1_opts$AIC),]
+
+#Add LBP_Sinister
+next_lr <- glm(formula = Inp_Outcome ~ Age_cont + Imaging_CT + Imaging_MR + Med_Antiepileptic + 
+                 QAS_arrival + LBP_Sinister,
+               family = binomial(link = "logit"), data = model_data)
+# summary(next_lr) #p<0.05
+
+#7. Compute AIC of remaining candidate variables
+add1_opts <- add1(object = next_lr, scope = full_lr)
+add1_opts[order(add1_opts$AIC),]
+
+#Add ATS_4_5
+next_lr <- glm(formula = Inp_Outcome ~ Age_cont + Imaging_CT + Imaging_MR + Med_Antiepileptic + 
+                 QAS_arrival + LBP_Sinister + ATS_4_5,
+               family = binomial(link = "logit"), data = model_data)
+# summary(next_lr) #p<0.05
+
+#8. Compute AIC of remaining candidate variables
+add1_opts <- add1(object = next_lr, scope = full_lr)
+add1_opts[order(add1_opts$AIC),]
+
+#Add Physio Review
+next_lr <- glm(formula = Inp_Outcome ~ Age_cont + Imaging_CT + Imaging_MR + Med_Antiepileptic + 
+                 QAS_arrival + LBP_Sinister + ATS_4_5 + Physio_Review,
+               family = binomial(link = "logit"), data = model_data)
+# summary(next_lr) #p<0.05
+
+#9. Compute AIC of remaining candidate variables
+add1_opts <- add1(object = next_lr, scope = full_lr)
+add1_opts[order(add1_opts$AIC),]
+
+#Add Med_Opiate
+next_lr <- glm(formula = Inp_Outcome ~ Age_cont + Imaging_CT + Imaging_MR + Med_Antiepileptic +
+                 QAS_arrival +LBP_Sinister + ATS_4_5 + Physio_Review + Med_Opiate,
+               family = binomial(link = "logit"), data = model_data)
+# summary(next_lr) #p<0.05
+
+#10. Compute AIC of remaining candidate variables
+add1_opts <- add1(object = next_lr, scope = full_lr)
+add1_opts[order(add1_opts$AIC),]
+
+#Add ED LOS
+next_lr <- glm(formula = Inp_Outcome ~ Age_cont + Imaging_CT + Imaging_MR + Med_Antiepileptic + QAS_arrival +
+                 LBP_Sinister + ATS_4_5 + Physio_Review + Med_Opiate + ED_los,
+               family = binomial(link = "logit"), data = model_data)
+# summary(next_lr) #p<0.05
+
+#11. Compute AIC of remaining candidate variables
+add1_opts <- add1(object = next_lr, scope = full_lr)
+add1_opts[order(add1_opts$AIC),]
+
+#Add Med_NSAIDs
+next_lr <- glm(formula = Inp_Outcome ~ Age_cont + Imaging_CT + Imaging_MR + Med_Antiepileptic + QAS_arrival +
+                 LBP_Sinister + ATS_4_5 + Physio_Review + Med_Opiate + ED_los + Med_NSAIDs,
+               family = binomial(link = "logit"), data = model_data)
+# summary(next_lr) #p<0.05
+
+#12. Compute AIC of remaining candidate variables
+add1_opts <- add1(object = next_lr, scope = full_lr)
+add1_opts[order(add1_opts$AIC),]
+
+#Add ATS 3 - AIC is the same as ATS_1_2 but with easier interpretation
+next_lr <- glm(formula = Inp_Outcome ~ Age_cont + Imaging_CT + Imaging_MR + Med_Antiepileptic + QAS_arrival +
+                 LBP_Sinister + ATS_4_5 + Physio_Review + Med_Opiate + ED_los + Med_NSAIDs + ATS_3 ,
+               family = binomial(link = "logit"), data = model_data)
+# summary(next_lr) #p<0.05
+
+#13. Compute AIC of remaining candidate variables
+add1_opts <- add1(object = next_lr, scope = full_lr)
+add1_opts[order(add1_opts$AIC),]
+
+#Nothing improves - add nothing, or add something already known (means NA coef), or make worse with gender
+next_lr <- glm(formula = Inp_Outcome ~ Age_cont + Imaging_CT + Imaging_MR + Med_Antiepileptic + QAS_arrival +
+                 LBP_Sinister + ATS_4_5 + Physio_Review + Med_Opiate + ED_los + Med_NSAIDs + ATS_3 + Gender,
+               family = binomial(link = "logit"), data = model_data)
+summary(next_lr) #Not significant, remove and accept
+
+
+#Final (linear) model
+final_lr <- glm(formula = Inp_Outcome ~ Age_cont + Imaging_CT + Imaging_MR + Med_Antiepileptic + QAS_arrival +
+                   LBP_Sinister + ATS_4_5 + Physio_Review + Med_Opiate + ED_los + Med_NSAIDs + ATS_3,
+                family = binomial(link = "logit"), data = model_data)
+```
+
+Add the p-spline element for age
+
+```{r}
+gam_pspline <- gam(Inp_Outcome ~ s(Age_cont) + Imaging_CT + Imaging_MR + 
+                      Med_Antiepileptic + QAS_arrival + LBP_Sinister + ATS_4_5 + 
+                      Physio_Review + Med_Opiate + ED_los + Med_NSAIDs + ATS_3, 
+               family = binomial(link = "logit"), data = model_data)
+summary(gam_pspline) #Everything still significant
+```
+
+
+#### Save Results
+
+```{r Age Effect - Figure}
+png(filename = paste0(model_save_path, "Inpatient_Model_pspline_AgeEffect.png"))
+plot(gam_pspline, shade = TRUE,  
+     ylab = "Age Effect (Log-odds)", xlab = "Age")
+dev.off()
+```
+
+```{r}
+#Linear elements
+linear_report <- tidy(gam_pspline, parametric = TRUE, conf.int = TRUE, conf.level = 0.95, exponentiate = TRUE)
+linear_report <- linear_report %>%
+   dplyr::select(term, estimate, p.value, conf.low, conf.high) %>%
+   rename(Variable = term, OR = estimate, pval = p.value, CI_95_L = conf.low, CI_95_U = conf.high) %>%
+   mutate(OR = paste0(round(OR,3), " (", round(CI_95_L,3), " to ", round(CI_95_U,3), ")"))
+
+#non-linear elements
+spline_report <- tidy(gam_pspline, parametric = F) %>%
+   rename(Variable = term, `Effective DoF` = edf, pval = p.value)
+
+#Save both pieces:
+write.csv(x = linear_report, 
+          file = paste0(model_save_path, "InpatientModel_LinearReport.csv"),
+          row.names = FALSE)
+write.csv(x = spline_report, 
+          file = paste0(model_save_path, "InpatientModel_NonlinearReport.csv"),
+          row.names = FALSE)
+```
+

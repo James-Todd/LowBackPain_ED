@@ -1,0 +1,827 @@
+---
+title: "Data Preparation - Tables"
+output: html_document
+---
+
+
+#### Set up
+
+
+
+```{r Set up}
+
+#clean start:
+rm(list = ls());gc()
+
+#libraries
+library(stringr)      #For some variable creation
+library(lubridate)    #For working with dates
+library(openxlsx)     #For converting Excel's numerics to date-times
+library(readxl)       #For reading excel files
+library(plyr)         #for rbind.fill
+library(purrr)        #For map functions
+library(dplyr)
+
+#file paths
+base_path <- "C:/Users/jtodd/OneDrive - Bond University/LBP/AJA/"
+raw_data_path <- paste0(base_path, "Data/Extracted/")
+proc_data_path <- paste0(base_path, "Data/Processed/")
+analysis_data_path <- paste0(base_path, "Data/Pre-Analysis/")
+
+```
+
+
+#### Data Preparation
+
+Data Preparation:
+* Load data
+* Add costing data to FirstNet presentation data
+* Adjust costs for inflation
+* Remove presentations of individuals under the age of 18
+* Standardise dates and times
+
+```{r Load Datasets}
+#Load EDIS data files - back pain presentations, physio consultations, and imaging orders
+edis_data <- read.csv(file = paste0(proc_data_path, "EDIS_Presentations.csv"), 
+                      stringsAsFactors = FALSE)
+edis_physio <- read.csv(file = paste0(raw_data_path, "EDIS Physio 2016-2019 deidentified.csv"),
+                         stringsAsFactors = FALSE)
+edis_imaging <- read.csv(file = paste0(raw_data_path, "EDIS Imaging 2014-2019 deidentified.csv"),
+                         stringsAsFactors = FALSE)
+
+#Load FirstNet data
+fn_data <- read.csv(file = paste0(proc_data_path, "FirstNet_Presentations.csv"), 
+                    stringsAsFactors = FALSE)
+fn_meds <- read.csv(file = paste0(proc_data_path, "FirstNet_Medications.csv"),
+                    stringsAsFactors = FALSE)
+fn_physio <- read_excel(path = paste0(raw_data_path, "FirstNet Physio 2019-2021 deidentified.xlsx"))
+
+#Physio data requires brief tweaking to match the processed files
+fn_physio$combined_id <- paste0(fn_physio$`Project ID`, "-", fn_physio$`ED Arrival Date/Time`)
+fn_physio <- fn_physio[fn_physio$`Project ID` != 76,]
+
+#Load Costing Data
+cost_data <- read.csv(file = paste0(proc_data_path, "Costs_Categorised.csv"),
+                      stringsAsFactors = FALSE)
+```
+
+
+```{r Merge Firstnet and Costs}
+#Combine the costing and firstnet data - some time-of-extraction variability to address
+fn_data$ED.Arrival.Date.Time <- ymd_hms(fn_data$ED.Arrival.Date.Time)
+cost_data$ED.Arrival.Date.Time <- ymd_hms(cost_data$ED.Arrival.Date.Time)
+
+#Join costing data onto all patient matches
+linked_data <- merge(x = fn_data, y = cost_data, 
+                     by.x = c("Project.ID"),
+                     by.y = c("Project.ID"),
+                     all.x = TRUE, suffixes = c("_Pres", "_Cost"))
+
+#Where there are multiple matches of cost and presentation, keep the match with the smallest time difference between datasets
+linked_data$fn_cost_diff <- abs(linked_data$ED.Arrival.Date.Time_Pres - linked_data$ED.Arrival.Date.Time_Cost)
+linked_data$ED.Arrival.Date.Time = linked_data$ED.Arrival.Date.Time_Pres
+linked_data <- linked_data[order(linked_data$fn_cost_diff),]
+linked_data <- linked_data[!duplicated(linked_data[,c("Project.ID", "ED.Arrival.Date.Time")]),]
+
+#Clean up a bit and assign as the firstnet data
+linked_data[,c("ED.Arrival.Date.Time.Cost", "ED.Arrival.Date.Time_Cost", "ED.Arrival.Date.Time_Pres")] <- NULL
+fn_data <- linked_data; rm(linked_data)
+
+```
+
+
+```{r CPI Adjustments}
+#Load cpi data: https://www.abs.gov.au/statistics/economy/price-indexes-and-inflation/consumer-price-index-australia/latest-release
+cpi <- read.csv(file = paste0(raw_data_path, "Brisbane Health CPI.csv"))
+
+#Fix up cpi data before use: make date column dates and set to end of month
+cpi$Date <- dmy(cpi$Date)
+cpi$Date <- cpi$Date + months(1) - days(1)
+
+#Add an adjustment figure for each quarterly period:
+cpi$QuarterRates <- c(NA, cpi$CPI[-1] / cpi$CPI[-nrow(cpi)])
+#This is the rate to get you to the associated date (matching date in row) from the previous date
+#If date = i, and date_t1 < i < date_t2, apply rate_t2
+
+#filter out some of the dates we don't need
+cpi <- dplyr::filter(cpi, ymd("2021-07-01") > Date, ymd("2018-07-01") < Date)
+
+#Mini function for adjustments:
+#' function returns the accumulation factor to go from a comparison date to the end of cpi dates
+#' @param cpi_dates - vector of dates, at which CPI is reported
+#' @param cpi_rates - vector of yearly rates to get from previous quarter to end of current quarter 
+#' @param comparison_date - date value for which the appropriate accumulation factor is of interest
+#' @return accumlation_factor - factor to use for accumulation from comparison date to max of cpi_dates
+adjust_cpi <- function(cpi_dates, cpi_rates, comparison_date) {
+  
+  #Reduce the dates and rates to the relevant ones
+  keep_ind <- which(cpi_dates > comparison_date)
+  cpi_dates <- cpi_dates[keep_ind]
+  cpi_rates <- cpi_rates[keep_ind]
+  
+  #Accumulation factor is just all the rates combined (2021-06-30 CPI / most recent CPI)
+  accumulation_factor <- prod(cpi_rates)
+  return(accumulation_factor)
+  
+}
+
+#Create a date version of ED arrival date time - don't need the time element
+fn_data$ArrivalDate <- make_date(year = year(fn_data$ED.Arrival.Date.Time),
+                                 month = month(fn_data$ED.Arrival.Date.Time),
+                                 day = day(fn_data$ED.Arrival.Date.Time))
+
+#Generate the accumulation factors for the dollar figures:
+fn_data$cpi_adjustments <- map_dbl(.x = fn_data$ArrivalDate, .f = adjust_cpi,
+                                   cpi_dates = cpi$Date,
+                                   cpi_rates = cpi$QuarterRates)
+
+#Tweak the cost, revenue, and PnL figures
+adjust_cols <- c("ED_Cost", "ED_Revenue", "ED_PnL",
+                 "Inp_Cost", "Inp_Revenue", "Inp_PnL",
+                 "Allied_Health", "Medical", "Pathology", 
+                 "Maybe_Nursing", "Other", "Maybe_Critical_Care", 
+                 "Critical_Care", "Imaging", "Surgical", "Pharmacy")
+for(cur_col in adjust_cols) {
+  
+  fn_data[[cur_col]] <- fn_data[[cur_col]] * fn_data$cpi_adjustments
+  
+}
+
+rm(list = c("cost_data", "cpi", "cur_col", "adjust_cols")); gc()
+```
+
+
+```{r Filtering - Patients under 18}
+#Remove presentations of individuals under the age of 18
+edis_data <- subset(edis_data, Age.at.Arrival >= 18) 
+fn_data <- subset(fn_data, Age >= 18) 
+```
+
+
+
+```{r Recoding - Dates and Times}
+#All times using UTC (the default) for convenience. 
+
+#ED times need to be fixed for main EDIS data
+edis_data$ED.Arrival.Date.Time <- ymd_hms(edis_data$ED.Arrival.Date.Time)
+edis_data$ED.Departure.date.time <- ymd_hms(edis_data$ED.Departure.date.time)
+
+#Date of request needs fixing for EDIS image data
+edis_imaging$Date_Of_Request <- ymd_hms(edis_imaging$Date_Of_Request)
+
+#Physio data used to supplement EDIS - convert date
+edis_physio$Date <- dmy(edis_physio$Date)
+
+#Fixing the INP.Admit.date.time and INP.Discharge.date.time for FirstNet
+fn_data$INP.Admit.date.time <- convertToDateTime(as.numeric(fn_data$INP.Admit.date.time))
+fn_data$INP.Discharge.date.time <- convertToDateTime(as.numeric(fn_data$INP.Discharge.date.time))
+
+#Reformat to be lubridate classes
+fn_data$INP.Admit.date.time <- ymd_hms(fn_data$INP.Admit.date.time)
+fn_data$INP.Discharge.date.time <- ymd_hms(fn_data$INP.Discharge.date.time)
+
+#Also ED times for FirstNet
+fn_data$ED.Arrival.Date.Time <- ymd_hms(fn_data$ED.Arrival.Date.Time)
+fn_data$ED.Departure.date.time <- ymd_hms(fn_data$ED.Departure.date.time)
+
+#Also change FirstNet orders data: need order date to be a date
+fn_meds$Ordered.Date <- ymd_hms(fn_meds$Ordered.Date)
+
+```
+
+
+#### Feature Creation
+
+The following chunks create the features required for later creation of tables. Legibility is emphasised over conciseness and performance. 
+
+
+```{r Variable - Represent_48hr}
+#This variable indicates whether the current presentation resulted in a subsequent LBP presentation in 48hours
+
+#EDIS data
+edis_data$Represent_48hr <- "ph" 
+for(i in 1:nrow(edis_data)) {
+
+  #Extract patient ID and departure time for current presentation
+  cur_pat_id <- edis_data$Project.ID[i]
+  cur_depart_time <- edis_data$ED.Departure.date.time[i]
+  
+  #subset data to presentations with discharges after the current departure but within 48 hours
+  post_48 <- edis_data[edis_data$ED.Arrival.Date.Time > cur_depart_time,]
+  post_48 <- post_48[post_48$ED.Arrival.Date.Time <= (cur_depart_time+hours(48)),]
+  
+  #Check if current patient was readmitted 48 hours after ED discharge. Change "Represent_48hr" to Y or N accordingly
+  if(cur_pat_id %in% post_48$Project.ID) {
+    edis_data$Represent_48hr[i] <- "Y"
+  } else {
+    edis_data$Represent_48hr[i] <- "N"
+  }
+  
+}
+
+
+# FirstNet Data
+fn_data$Represent_48hr <- "ph"  
+for(i in 1:nrow(fn_data)) {
+
+  #Extract patient ID and departure time for current presentation
+  cur_pat_id <- fn_data$Project.ID[i]
+  cur_depart_time <- fn_data$ED.Departure.date.time[i]
+  
+  #subset data to presentations with discharges after the current departure but within 48 hours
+  #Two lines to make it easier to read
+  post_48 <- fn_data[fn_data$ED.Arrival.Date.Time > cur_depart_time,]
+  post_48 <- post_48[post_48$ED.Arrival.Date.Time <= (cur_depart_time+hours(48)),]
+  
+  #Check if current patient was readmitted 48 hours after ED discharge. Change "Represent_48hr" to Y or N accordingly
+  if(cur_pat_id %in% post_48$Project.ID) {
+    fn_data$Represent_48hr[i] <- "Y"
+  } else {
+    fn_data$Represent_48hr[i] <- "N"
+  }
+  
+}
+
+rm(list = c("cur_pat_id", "cur_depart_time","post_48"))
+```
+
+```{r Variable - Arrival Year}
+#Adding Arrival_Year for EDIS
+edis_data$ED.Arrival.Date.Time <- ymd_hms(edis_data$ED.Arrival.Date.Time)
+edis_data$ED_Arrival_Year <- year(edis_data$ED.Arrival.Date.Time)
+
+#Adding Arrival_Year for FN
+fn_data$ED.Arrival.Date.Time <- ymd_hms(fn_data$ED.Arrival.Date.Time)
+fn_data$ED_Arrival_Year <- year(fn_data$ED.Arrival.Date.Time)
+```
+
+```{r Variable - Radicular Sinister LBP flags}
+#Most severe used if multiple flags met
+
+#EDIS: Add flags for Radicular, sinister and NSLBP
+edis_radicular_codes <- c("I73.9 - LOWER LIMB ISCHAEMIA","M24.2 - LIGAMENT OR TENDON DISORDER",
+                          "M51.8 - INTERVERTEBRAL DISC DISORDER","G95.2 - SPINAL CORD COMPRESSION",
+                          "G60.9 - NEUROPATHY - PERIPHERAL","M54.1 - RADICULOPATHY",
+                          "G98 - NERVOUS SYSTEM DISORDER UNSPECIFIED",
+                          "M51.2 - BACK PAIN DUE TO DISPLACEMENT OF DISC",
+                          "M51.2 - SCIATICA DUE TO DISPLACED IV DISC","M54.3 - SCIATICA",
+                          "G95.2 - SPINAL CORD COMPRESSION","M79.2 - NEURALGIA",
+                          "T14.4 - NERVE TRAUMA")
+edis_sinister_codes <- c("A41.9 - SEPSIS - UNSPECIFIED (NOT SHOCKED)","A41.9 - SEPTIC SHOCK",
+                         "D37.9 - NEOPLASM OF THE DIGESTIVE SYSTEM","G95.2 - SPINAL CORD COMPRESSION",
+                         "I71.3 - ABDOMINAL AORTIC - RUPTURED","I71.3 - ABDOMINAL AORTIC ANEURYSM - LEAKING",
+                         "I71.4 - ABDOMINAL AORTIC ANEURYSM - WITHOUT RUPTUR","L02.9 - ABSCESS - UNSPECIFIED",
+                         "M00.95 - SEPTIC ARTHRITIS - UNSPECIFIED LOCATION",
+                         "M46.49 - DISCITIS,M84.49 - # PATHOLOGICAL","M86.99 - OSTEOMYELITIS UNSPECIFIED",
+                         "N39.9 - DIFFICULTY VOIDING - NOT PROSTATE RELATED","R15 - FAECAL INCONTINENCE",
+                         "R19.0 - INTRA-ABDOMINAL MASS, LUMP NOS","R50.9 - FEVER UNSPECIFIED",
+                         "R50.9 - PYREXIA UNKNOWN ORIGIN","S32.00 - # LUMBAR SPINE","S32.4 - # ACETABULUM",
+                         "S32.5 - # PELVIC PUBIS","S32.83 - # PELVIS")
+#NSLBP is just absence of a flag for either of the others, e.g. 1- max(radicular, sinister)
+edis_data$Sinister_Flag <- 1*(edis_data$ED.Diagnosis %in% edis_sinister_codes)
+edis_data$Radicular_Flag <- (1-edis_data$Sinister_Flag)*(edis_data$ED.Diagnosis %in% edis_radicular_codes)
+edis_data$NSLBP_Flag <- 1 - pmax(edis_data$Radicular_Flag, edis_data$Sinister_Flag)
+
+
+
+#FirstNet: Add flags for Radicular, sinister (assuming same thing as serious spinal pathology) and NSLBP
+fn_nslbp_codes <- c("278862001","91957002","161891005","424270008",
+                    "134407002","278860009","209571002","161894002",
+                    "26538006","20021007","135860001","279039007",
+                    "300956001","282766005","239880009","209565008",
+                    "279040009","34789001","61486003","203095000",
+                    "209548004","249921008","262965006","262975009")
+fn_radicular_codes <- c("247366003","307176005","307177001","24300005",
+                        "86269002","202794004","46960006","202735001",
+                        "128196005","23056005","18347007")
+fn_sinister_codes <- c("309083007",
+                       "19284003","192970008","207957008","308758008",
+                       "426646004","212360005","11437003","284062002",
+                       "281933002","202728009","2304001","125871005",
+                       "125608002","207986006","230614002","202731005",
+                       "207993005", "44237008", "48956000", "65491009", 
+                       "129166009")
+
+fn_data$Sinister_Flag <- 1*str_detect(string = fn_data$ED.Diagnosis, 
+                                      pattern = paste0(fn_sinister_codes, collapse = "|")) 
+
+fn_data$Radicular_Flag <- (1-fn_data$Sinister_Flag)*str_detect(string = fn_data$ED.Diagnosis, 
+                                       pattern = paste0(fn_radicular_codes, collapse = "|"))
+fn_data$NSLBP_Flag <- (1-fn_data$Radicular_Flag - fn_data$Sinister_Flag)*str_detect(string = fn_data$ED.Diagnosis, 
+                                   pattern = paste0(fn_nslbp_codes, collapse = "|"))
+
+
+rm(list = c("edis_radicular_codes", "edis_sinister_codes",
+            "fn_radicular_codes", "fn_sinister_codes",
+            "fn_nslbp_codes")); gc()
+```
+
+```{r Variable - Ambulance_Flag}
+#Adding Ambulance_Flag for EDIS
+edis_data$Ambulance_Flag <- 1*str_detect(string = tolower(edis_data$Arrival.Mode), pattern = "ambulance")
+
+#Adding Ambulance_Flag for FN
+fn_data$Ambulance_Flag <- 1*str_detect(string = tolower(fn_data$Arrival.Mode), pattern = "ambulance")
+```
+
+```{r Variable - Physio Review Flag}
+#EDIS:
+#Doing it with a loop to make it transparent
+edis_data$Physio_Review <- 2 #Initialising
+for(i in 1:nrow(edis_data)) {
+  
+  #Get the project ID, ED start date, and ED end date
+  cur_proj_id <- edis_data$Project.ID[i]
+  cur_start_date <- as_date(edis_data$ED.Arrival.Date.Time[i])
+  cur_end_date <- as_date(edis_data$ED.Departure.date.time[i])
+  
+  #Find matching entries in the supplied physio data
+  physio_subset <- subset(edis_physio, Date >= cur_start_date & Date <= cur_end_date & Project.ID == cur_proj_id)
+  
+  #If any match, counts as a physio review for the presentation
+  edis_data$Physio_Review[i] <- 1*(nrow(physio_subset)>0)
+  
+  
+}
+
+#FirstNet:
+#Doing it with a loop to make it transparent
+fn_data$Physio_Review <- 2 #Initialising
+for(i in 1:nrow(fn_data)) {
+  
+  #Get the combined ID from fn_data
+  cur_comb_id <- fn_data$combined_id[i]
+  
+  #Find the matches in unrefined_b:
+  physio_subset <- fn_physio[fn_physio$combined_id == cur_comb_id,]
+  
+  #Check for any physio consults and record
+  fn_data$Physio_Review[i] <- 1*any(str_detect(string = tolower(physio_subset$`AH Consult`), pattern = "physiotherapy"))
+  
+  
+}
+
+rm(list = c("cur_proj_id", "cur_start_date", "cur_end_date",
+            "cur_comb_id", "physio_subset")); gc()
+```
+
+```{r Variable - Weekend Flag}
+#Making this as clear as possible
+edis_data$Weekend_Flag <- 1*(wday(edis_data$ED.Arrival.Date.Time, label = T, abbr = F) %in% c("Saturday","Sunday"))
+
+#FirstNet:
+fn_data$Weekend_Flag <- 1*(wday(fn_data$ED.Arrival.Date.Time, label = T, abbr = F) %in% c("Saturday","Sunday"))
+```
+
+```{r Variable - Working Hour Flag}
+#working hours are 9-17, M-F
+#EDIS - easy times, 5pm on the dot, not on the weekend
+edis_data$WorkingHour_Flag <- 1*(hour(edis_data$ED.Arrival.Date.Time) %in% 8:16)
+edis_data$WorkingHour_Flag[hour(edis_data$ED.Arrival.Date.Time) == 17 & minute(edis_data$ED.Arrival.Date.Time) == 0] <- 1
+edis_data$WorkingHour_Flag <- edis_data$WorkingHour_Flag * (1 - edis_data$Weekend_Flag)
+
+#FirstNet - easy times, 5pm on the dot, not on the weekend
+fn_data$WorkingHour_Flag <- 1*(hour(fn_data$ED.Arrival.Date.Time) %in% 8:16)
+fn_data$WorkingHour_Flag[hour(fn_data$ED.Arrival.Date.Time) == 17 & minute(fn_data$ED.Arrival.Date.Time) == 0] <- 1
+fn_data$WorkingHour_Flag <- fn_data$WorkingHour_Flag * (1 - fn_data$Weekend_Flag)
+```
+
+```{r Variable - ED.Total.LOS.Hrs}
+#EDIS
+edis_data$ED.SS.LOS.Hrs <- ifelse(edis_data$ED.SS.LOS.Hrs == "NULL", 0, as.numeric(edis_data$ED.SS.LOS.Hrs))
+edis_data$ED.Total.LOS.Hrs <- as.numeric(difftime(time1 = edis_data$ED.Departure.date.time, 
+                                       time2 = edis_data$ED.Arrival.Date.Time,
+                                       units = "hours")) + edis_data$ED.SS.LOS.Hrs
+edis_data$INP.LOS.Hrs <- ifelse(edis_data$INP.LOS.Hrs == "NULL", "0", as.numeric(edis_data$INP.LOS.Hrs))
+
+#FirstNet
+fn_data$INP.LOS.Hrs <- ifelse(fn_data$INP.LOS.Hrs == "NULL", 0, as.numeric(fn_data$INP.LOS.Hrs))
+fn_data$ED.SS.LOS.Hrs <- ifelse(fn_data$ED.SS.LOS.Hrs == "NULL", 0, as.numeric(fn_data$ED.SS.LOS.Hrs))
+
+#fn_data$ED.Total.LOS.Hrs
+```
+
+```{r Variable - Hospital Admission Flag}
+#For EDIS: 
+edis_data$HospAdmit_Flag <- ifelse(edis_data$Departure.destination %in% c("DISCH", "EDSS"), 0, 1)
+
+#For FirstNet
+fn_data$HospAdmit_Flag <- ifelse(fn_data$Departure.destination %in% "INP" & fn_data$INP.LOS.Hrs > (fn_data$ED.SS.LOS.Hrs + 1),
+                              1, 0)
+```
+
+```{r Variable prep - Imaging Orders}
+#Just loading in the data specifying the exact orders relevant for each imaging type
+image_cats <- read.csv(file = paste0(raw_data_path, "Imaging Categories.csv"), stringsAsFactors = FALSE)
+#First column has weird name
+colnames(image_cats)[1] <- "ORDER_CATALOG_MR"
+
+#MR/CT/XR imaging:
+MR_orders <- image_cats$ORDER_CATALOG_MR
+CT_orders <- image_cats$ORDER_CATALOG_CT
+XR_orders <- image_cats$ORDER_CATALOG_XR
+
+#Clean up empty fields:
+MR_orders <- MR_orders[nchar(MR_orders)>0]
+CT_orders <- CT_orders[nchar(CT_orders)>0]
+XR_orders <- XR_orders[nchar(XR_orders)>0]
+
+```
+
+
+```{r Variable - Imaging Flags}
+#going to use a loop for EDIS, making it easier to follow.
+edis_data[,c("Imaging_Flag","CT_Flag", "MR_Flag", "XR_Flag")] <- 2
+for(i in 1:nrow(edis_data)) {
+  
+  #Current project ID (no presentation ID, adding time constraints), admit time and discharge time
+  cur_proj_id <- edis_data$Project.ID[i]
+  cur_pres_start <- edis_data$ED.Arrival.Date.Time[i]
+  cur_pres_end <- edis_data$ED.Departure.date.time[i] + days(3)
+  
+  #Matching data from aggregate imaging data:
+  cur_orders <- subset(edis_imaging, 
+                       Project_ID == cur_proj_id & Date_Of_Request < cur_pres_end & Date_Of_Request > cur_pres_start)
+  
+  #Check for matches in the order catalog field
+  edis_data$CT_Flag[i] <- 1*any(tolower(cur_orders$Exam_Name) %in% tolower(CT_orders))
+  edis_data$MR_Flag[i] <- 1*any(tolower(cur_orders$Exam_Name) %in% tolower(MR_orders))
+  edis_data$XR_Flag[i] <- 1*any(tolower(cur_orders$Exam_Name) %in% tolower(XR_orders))
+  edis_data$Imaging_Flag[i] <- max(edis_data$CT_Flag[i], edis_data$MR_Flag[i], edis_data$XR_Flag[i])
+
+}
+
+
+#going to use a loop for Firstnet, making it easier to follow. 
+fn_data[,c("Imaging_Flag","CT_Flag", "MR_Flag", "XR_Flag")] <- 2
+fn_data$Outp_Image_Flag <- 2 
+for(i in 1:nrow(fn_data)) {
+  
+  #Current project ID - not presentation because we are using a window around ED discharge
+  cur_proj_id <- fn_data$Project.ID[i]
+  cur_pres_start <- fn_data$ED.Arrival.Date.Time[i]
+  cur_pres_end <- fn_data$ED.Departure.date.time[i] + days(3)
+  
+  
+  #Matching data from aggregate imaging data:
+  cur_orders <- subset(fn_meds, 
+                       Project.ID == cur_proj_id & Ordered.Date < cur_pres_end & Ordered.Date > cur_pres_start)
+  
+  #Check for matches in the order catalog field
+  fn_data$CT_Flag[i] <- 1*any(tolower(cur_orders$ORDER_CATALOG) %in% tolower(CT_orders))
+  fn_data$MR_Flag[i] <- 1*any(tolower(cur_orders$ORDER_CATALOG) %in% tolower(MR_orders))
+  fn_data$XR_Flag[i] <- 1*any(tolower(cur_orders$ORDER_CATALOG) %in% tolower(XR_orders))
+  fn_data$Imaging_Flag[i] <- max(fn_data$CT_Flag[i], fn_data$MR_Flag[i], fn_data$XR_Flag[i])
+  
+  fn_data$Outp_Image_Flag[i] <- 1*any(str_detect(string = tolower(cur_orders$ORDER_DETAIL_DISPLAY),pattern = "outpat"))
+  
+}
+
+
+rm(list = c("image_cats", "MR_orders", "CT_orders", "XR_orders"))
+rm(list = c("cur_proj_id", "cur_pres_start", "cur_pres_end", "cur_orders"))
+```
+
+
+```{r Variable prep - medication categories}
+#Just defining vectors of related medications for each medication category
+Analgesics <- c("amiTRIPTYLine","buprenorphine","buprenorphine-naloxone","codeine",
+                "dexamethasone",  "Diazepam","diclofenac","diclofenac topical",
+                "fentanyl","gabapentin","HYDROmorphone","ibuprofen","ketamine",
+                "ketOROLAC","methADONe","midazolam","morphine","naproxen",
+                "orphenadrine","oxycodone","oxycodone-naloxone","paracetamol",
+                "paracetamol-codeine","prednisone","pregabalin","propOFol",
+                "tAPENTadol","tRAMadol") #Everything
+
+NSAIDs <- c("diclofenac", "diclofenac topical", "ibuprofen", "ketOROLAC", "naproxen")
+Opiates <- c("buprenorphine", "buprenorphine-naloxone", "codeine", "fentanyl", 
+                  "HYDROmorphone", "ketamine", "methADONe", "morphine", "oxycodone",
+                  "oxycodone-naloxone", "paracetamol-codeine", "propOFol", "tAPENTadol",
+                  "tRAMadol")
+not_opiates <- setdiff(Analgesics,Opiates)
+Relaxants <- c("orphenadrine", "Diazepam")
+Benzos <- c("Diazepam", "midazolam")
+Antiepileptics <- c("amiTRIPTYLine", "gabapentin", "pregabalin")
+Antidepressants <- c("amiTRIPTYLine")
+Oral_corticos <- c("dexamethasone", "prednisone")
+Antipsychotics <- c()
+
+
+```
+
+```{r Variable - Paracetamol Flag}
+#This can only be done for FirstNet. For consistency, I'm making a matching column for edis, but it is all zeroes
+edis_data$Paracetamol_Flag <- 0
+
+#going to use a loop for this, making it easier to follow. Could probably do an sapply or an aggregate or group_by or similar
+fn_data$Paracetamol_Flag <- 2
+for(i in 1:nrow(fn_data)) {
+  
+  #Current presentation ID
+  cur_pres_id <- fn_data$Presentation_ID[i]
+  
+  #Matching data from medication table:
+  cur_meds <- subset(fn_meds, Presentation_ID == cur_pres_id)
+  
+  #Check if there are any matches in the order catalog
+  fn_data$Paracetamol_Flag[i] <- 1*any(tolower(cur_meds$ORDER_CATALOG) %in% tolower("Paracetamol"))
+  
+}
+
+```
+
+
+```{r Variable - Analgesic Flag}
+#This can only be done for FirstNet. For consistency, I'm making a matching column for edis, but it is all zeroes
+edis_data$Analgesic_Flag <- 0
+
+#going to use a loop for this, making it easier to follow. Could probably do an sapply or an aggregate or group_by or similar
+fn_data$Analgesic_Flag <- 2
+for(i in 1:nrow(fn_data)) {
+  
+  #Current presentation ID
+  cur_pres_id <- fn_data$Presentation_ID[i]
+  
+  #Matching data from medication table:
+  cur_meds <- subset(fn_meds, Presentation_ID == cur_pres_id)
+  
+  #Check if there are any matches in the order catalog
+  fn_data$Analgesic_Flag[i] <- 1*any(tolower(cur_meds$ORDER_CATALOG) %in% tolower(Analgesics))
+  
+}
+
+```
+
+```{r Variable - NSAID Flag}
+#This can only be done for FirstNet. For consistency, I'm making a matching column for edis, but it is all zeroes
+edis_data$NSAIDs_Flag <- 0
+
+#going to use a loop for this, making it easier to follow. Could probably do an sapply or an aggregate or group_by or similar
+fn_data$NSAIDs_Flag <- 2
+for(i in 1:nrow(fn_data)) {
+  
+  #Current presentation ID
+  cur_pres_id <- fn_data$Presentation_ID[i]
+  
+  #Matching data from medication table:
+  cur_meds <- subset(fn_meds, Presentation_ID == cur_pres_id)
+  
+  #Check if there are any matches in the order catalog
+  fn_data$NSAIDs_Flag[i] <- 1*any(tolower(cur_meds$ORDER_CATALOG) %in% tolower(NSAIDs))
+  
+}
+
+```
+
+```{r Variable - Opioid Flag}
+#This can only be done for FirstNet. For consistency, I'm making a matching column for edis, but it is all zeroes
+edis_data$Opiate_Flag <- 0
+
+#going to use a loop for this, making it easier to follow. Could probably do an sapply or an aggregate or group_by or similar
+fn_data$Opiate_Flag <- 2
+for(i in 1:nrow(fn_data)) {
+  
+  #Current presentation ID
+  cur_pres_id <- fn_data$Presentation_ID[i]
+  
+  #Matching data from medication table:
+  cur_meds <- subset(fn_meds, Presentation_ID == cur_pres_id)
+  
+  #Check if there are any matches in the order catalog
+  fn_data$Opiate_Flag[i] <- 1*any(tolower(cur_meds$ORDER_CATALOG) %in% tolower(Opiates))
+  
+}
+
+```
+
+```{r Variable - Opioid Combination Flag}
+#This can only be done for FirstNet. For consistency, I'm making a matching column for edis, but it is all zeroes
+edis_data$NotOpiate_Flag <- 0
+edis_data$OpiateComb_Flag <- 0
+
+#going to use a loop for this, making it easier to follow. Could probably do an sapply or an aggregate or group_by or similar
+fn_data$NotOpiate_Flag <- 2
+for(i in 1:nrow(fn_data)) {
+  
+  #Current presentation ID
+  cur_pres_id <- fn_data$Presentation_ID[i]
+  
+  #Matching data from medication table:
+  cur_meds <- subset(fn_meds, Presentation_ID == cur_pres_id)
+  
+  #Check if there are any matches in the order catalog
+  fn_data$NotOpiate_Flag[i] <- 1*any(tolower(cur_meds$ORDER_CATALOG) %in% tolower(not_opiates))
+  
+}
+
+#Now add the opiate combination flag: 1 if opiates and others, 0 if only opiates, only others, or neither
+fn_data$OpiateComb_Flag <- fn_data$Opiate_Flag * fn_data$NotOpiate_Flag
+
+```
+
+```{r Variable - Benzodiazepines Flag}
+#This can only be done for FirstNet. For consistency, I'm making a matching column for edis, but it is all zeroes
+edis_data$Benzo_Flag <- 0
+
+#going to use a loop for this, making it easier to follow. Could probably do an sapply or an aggregate or group_by or similar
+fn_data$Benzo_Flag <- 2
+for(i in 1:nrow(fn_data)) {
+  
+  #Current presentation ID
+  cur_pres_id <- fn_data$Presentation_ID[i]
+  
+  #Matching data from medication table:
+  cur_meds <- subset(fn_meds, Presentation_ID == cur_pres_id)
+  
+  #Check if there are any matches in the order catalog
+  fn_data$Benzo_Flag[i] <- 1*any(tolower(cur_meds$ORDER_CATALOG) %in% tolower(Benzos))
+  
+}
+
+```
+
+```{r Variable - Muscle Relaxant Flag}
+#This can only be done for FirstNet. For consistency, I'm making a matching column for edis, but it is all zeroes
+edis_data$Relaxant_Flag <- 0
+
+#going to use a loop for this, making it easier to follow. Could probably do an sapply or an aggregate or group_by or similar
+fn_data$Relaxant_Flag <- 2
+for(i in 1:nrow(fn_data)) {
+  
+  #Current presentation ID
+  cur_pres_id <- fn_data$Presentation_ID[i]
+  
+  #Matching data from medication table:
+  cur_meds <- subset(fn_meds, Presentation_ID == cur_pres_id)
+  
+  #Check if there are any matches in the order catalog
+  fn_data$Relaxant_Flag[i] <- 1*any(tolower(cur_meds$ORDER_CATALOG) %in% tolower(Relaxants))
+  
+}
+
+```
+
+```{r Variable - Antiepileptic Flag}
+#This can only be done for FirstNet. For consistency, I'm making a matching column for edis, but it is all zeroes
+edis_data$Antiepileptic_Flag <- 0
+
+#going to use a loop for this, making it easier to follow. Could probably do an sapply or an aggregate or group_by or similar
+fn_data$Antiepileptic_Flag <- 2
+for(i in 1:nrow(fn_data)) {
+  
+  #Current presentation ID
+  cur_pres_id <- fn_data$Presentation_ID[i]
+  
+  #Matching data from medication table:
+  cur_meds <- subset(fn_meds, Presentation_ID == cur_pres_id)
+  
+  #Check if there are any matches in the order catalog
+  fn_data$Antiepileptic_Flag[i] <- 1*any(tolower(cur_meds$ORDER_CATALOG) %in% tolower(Antiepileptics))
+  
+}
+
+```
+
+```{r Variable - Antidepressant Flag}
+#This can only be done for FirstNet. For consistency, I'm making a matching column for edis, but it is all zeroes
+edis_data$Antidepressant_Flag <- 0
+
+#going to use a loop for this, making it easier to follow. Could probably do an sapply or an aggregate or group_by or similar
+fn_data$Antidepressant_Flag <- 2
+for(i in 1:nrow(fn_data)) {
+  
+  #Current presentation ID
+  cur_pres_id <- fn_data$Presentation_ID[i]
+  
+  #Matching data from medication table:
+  cur_meds <- subset(fn_meds, Presentation_ID == cur_pres_id)
+  
+  #Check if there are any matches in the order catalog
+  fn_data$Antidepressant_Flag[i] <- 1*any(tolower(cur_meds$ORDER_CATALOG) %in% tolower(Antidepressants))
+  
+}
+
+```
+
+```{r Variable - Oral Corticosteroids Flag}
+#This can only be done for FirstNet. For consistency, I'm making a matching column for edis, but it is all zeroes
+edis_data$OralCortic_Flag <- 0
+
+#going to use a loop for this, making it easier to follow. Could probably do an sapply or an aggregate or group_by or similar
+fn_data$OralCortic_Flag <- 2
+for(i in 1:nrow(fn_data)) {
+  
+  #Current presentation ID
+  cur_pres_id <- fn_data$Presentation_ID[i]
+  
+  #Matching data from medication table:
+  cur_meds <- subset(fn_meds, Presentation_ID == cur_pres_id)
+  
+  #Check if there are any matches in the order catalog
+  fn_data$OralCortic_Flag[i] <- 1*any(tolower(cur_meds$ORDER_CATALOG) %in% tolower(Oral_corticos))
+  
+}
+
+```
+
+```{r Variable - Antipsychotic Flag}
+#This can only be done for FirstNet. For consistency, I'm making a matching column for edis, but it is all zeroes
+edis_data$Antipsychotic_Flag <- 0
+
+#going to use a loop for this, making it easier to follow. Could probably do an sapply or an aggregate or group_by or similar
+fn_data$Antipsychotic_Flag <- 2
+for(i in 1:nrow(fn_data)) {
+  
+  #Current presentation ID
+  cur_pres_id <- fn_data$Presentation_ID[i]
+  
+  #Matching data from medication table:
+  cur_meds <- subset(fn_meds, Presentation_ID == cur_pres_id)
+  
+  #Check if there are any matches in the order catalog
+  fn_data$Antipsychotic_Flag[i] <- 1*any(tolower(cur_meds$ORDER_CATALOG) %in% tolower(Antipsychotics))
+  
+}
+
+```
+
+```{r Medication cleanup}
+rm(list = c("Analgesics", "NSAIDs", "Opiates", "not_opiates", 
+            "Relaxants", "Benzos", "Antiepileptics", 
+            "Antidepressants", "Oral_corticos", "Antipsychotics",
+            "cur_meds"))
+gc()
+```
+
+
+````{r Variable - Pathology Flag}
+#This can only be done for FirstNet. For consistency, I'm making a matching column for edis, but it is all zeroes
+edis_data$Pathology_Flag <- 0
+
+#going to use a loop for this, making it easier to follow. Could probably do an sapply or an aggregate or group_by or similar
+fn_data$Pathology_Flag <- 2
+for(i in 1:nrow(fn_data)) {
+  
+  #Current presentation ID
+  cur_pres_id <- fn_data$Presentation_ID[i]
+  
+  #Matching data from orders table:
+  cur_orders <- subset(fn_meds, Presentation_ID == cur_pres_id)
+  
+  #Check if there are any matches in the order catalog
+  fn_data$Pathology_Flag[i] <- 1*any(cur_orders$ORDER_TYPE == "Pathology")
+  
+}
+
+rm(cur_orders); gc()
+```
+
+```{r Variable prep - surgery options}
+surgery_codes <- c("Lumbar microdiscectomy", 
+                   "Thoracic laminectomy and excision of intradural spinal lesion",
+                   "Lumbar laminectomy",
+                   "Laminectomy and discectomy",
+                   "Removal of lesion from spinal extradural space",
+                   "Thoracic decompressive laminectomy",
+                   "Laminectomy",
+                   "Lumbar decompressive laminectomy",
+                   "Vertebroplasty")
+#Update surgery codes to reflect character limits in the relevant FirstNet field
+surgery_codes <- str_sub(surgery_codes, 1, 40)
+
+```
+
+```{r Variable - Surgery Flag}
+#This can only be done for FirstNet. For consistency, I'm making a matching column for edis, but it is all zeroes
+edis_data$Surgery_Flag <- 0
+
+#going to use a loop for this, making it easier to follow. Could probably do an sapply or an aggregate or group_by or similar
+fn_data$Surgery_Flag <- 2
+for(i in 1:nrow(fn_data)) {
+  
+  #Current presentation ID
+  cur_pres_id <- fn_data$Presentation_ID[i]
+  
+  #Matching data from orders table:
+  cur_orders <- subset(fn_meds, Presentation_ID == cur_pres_id)
+  
+  #Check if there are any matches in the order catalog
+  fn_data$Surgery_Flag[i] <- 1*any(cur_orders$ORDER_CATALOG %in% surgery_codes)
+  
+}
+
+rm(list = c("surgery_codes", "cur_pres_id", "cur_orders"))
+```
+
+
+
+#### Save the prepared data
+
+```{r}
+#RDS objects to grant more control to subsequent scripts loading the data
+saveRDS(object = edis_data,file = paste0(analysis_data_path, "edis_table_data.rds"))
+saveRDS(object = fn_data,file = paste0(analysis_data_path, "firstnet_table_data.rds"))
+```
+
+
+

@@ -1,0 +1,263 @@
+---
+title: "Cleaning the Provided Data"
+output: html_document
+---
+
+## Set up
+
+```{r Set up}
+
+#clean start:
+rm(list = ls());gc()
+
+#libraries
+library(readxl)       #for loading data
+library(stringr)      #For filtering based on ED diagnosis
+library(knitr)        #For kable
+library(lubridate)    #For working with dates
+
+#file paths
+base_path <- "C:/Users/jtodd/OneDrive - Bond University/LBP/AJA/"
+raw_data_path <- paste0(base_path, "Data/Extracted/")
+proc_data_path <- paste0(base_path, "Data/Processed/") 
+```
+
+
+## EDIS Data - ED Presentations
+
+
+```{r EDIS - Load}
+#Load data
+edis_data <- read_excel(paste0(raw_data_path, "EDIS ED 2015-2019 deidentified.xlsx"),
+                       sheet = 2)
+#Delete blank rows
+edis_data <- edis_data[!(edis_data$`Project ID` %in% 76),]
+
+#Create an age column - to align with FirstNet data
+edis_data[,"Age.at.Arrival"] <- as.period(interval(start = edis_data$DateOfBirth,
+                                                   end = edis_data$`ED Arrival Date/Time`))$year
+```
+
+```{r EDIS - Presentation_ID}
+#Create the combined_id column
+edis_data$combined_id <- paste0(edis_data$`Project ID`, "-", edis_data$`ED Arrival Date/Time`)
+
+#Delete any duplicated presentations
+edis_data <- edis_data[!duplicated(edis_data$combined_id),]
+
+#Make a nicer and equivalent presentation id: (still equivalent to the other ID given that it has no duplicates)
+edis_data$Presentation_ID <- paste0("P", 1:nrow(edis_data))
+
+```
+
+```{r EDIS - Filter}
+#Define diagnoses which are allowed for
+include_diags <- c("A41.9 - SEPSIS - UNSPECIFIED (NOT SHOCKED)",
+                   "A41.9 - SEPTIC SHOCK",
+                   "C41.9 - OSTEOSARCOMA/BONE & CARTILAGE MALIGNANCY",
+                   "C43.9 - MALIGNANT MELANOMA",
+                   "C49.9 - OTHER SOFT TISSUE MALIGNANCY INCL. SARCOMA",
+                   "C80 - MULTIPLE METASTASES",
+                   "C90.00 - MULTIPLE MYELOMA",
+                   "D48.9 - NEOPLASM - UNSPECIFIED",
+                   "F43.9 - REACTION TO SEVERE STRESS",
+                   "F45.9 - SOMATOFORM DISORDER",
+                   "G60.9 - NEUROPATHY - PERIPHERAL",
+                   "G60.9 - POLYNEUROPATHY",
+                   "G70.0 - MYAESTHENIA GRAVIS",
+                   "G95.2 - SPINAL CORD COMPRESSION",
+                   "G98 - NERVOUS SYSTEM DISORDER UNSPECIFIED",
+                   "I71.01 - THORACIC AORTIC ANEURYSM - DISSECTING",
+                   "I71.3 - ABDOMINAL AORTIC - RUPTURED",
+                   "I71.3 - ABDOMINAL AORTIC ANEURYSM - LEAKING",
+                   "I71.4 - ABDOMINAL AORTIC ANEURYSM - WITHOUT RUPTUR",
+                   "L02.9 - ABSCESS - MULTIPLE SITES",
+                   "L02.9 - ABSCESS - UNSPECIFIED",
+                   "L02.9 - ABSCESS- SINGLE",
+                   "M00.95 - SEPTIC ARTHRITIS - UNSPECIFIED LOCATION",
+                   "M13.9 - ARTHROPATHY",
+                   "M19.99 - OSTEOARTHRITIS",
+                   "M24.2 - LIGAMENT OR TENDON DISORDER",
+                   "M46.49 - DISCITIS",
+                   "M51.2 - BACK PAIN DUE TO DISPLACEMENT OF DISC",
+                   "M51.2 - SCIATICA DUE TO DISPLACED IV DISC",
+                   "M51.8 - INTERVERTEBRAL DISC DISORDER",
+                   "M53.3 - BACK MUSCLE SPASM",
+                   "M53.3 - COCCYX PAIN",
+                   "M54.1 - RADICULOPATHY",
+                   "M54.3 - SCIATICA",
+                   "M79.19 - MYALGIA",
+                   "M79.2 - NEURALGIA",
+                   "M84.49 - # PATHOLOGICAL",
+                   "M86.99 - OSTEOMYELITIS UNSPECIFIED",
+                   "N39.9 - DIFFICULTY VOIDING - NOT PROSTATE RELATED",
+                   "R50.9 - FEVER UNSPECIFIED",
+                   "R50.9 - PYREXIA UNKNOWN ORIGIN",
+                   "S32.00 - # LUMBAR SPINE",
+                   "S33.10 - LUMBAR SUBLUXATION",
+                   "S33.2 - COCCYX SUBLUXATION",
+                   "S33.2 - SACROILIAC SUBLUXATION",
+                   "S33.7 - BACK SPRAIN / STRAIN",
+                   "S33.7 - COCCYX SPRAIN / STRAIN",
+                   "S33.7 - LOW BACK PAIN",
+                   "S33.7 - LUMBAR SPRAIN / STRAIN",
+                   "S33.7 - SACRUM SPRAIN / STRAIN",
+                   "S38.1 - BACK CRUSH INJURY",
+                   "T14.4 - NERVE TRAUMA")
+
+#Filter to the relevant diagnoses
+edis_data <- edis_data[edis_data$`ED Diagnosis` %in% include_diags,]
+
+#Re-order columns - want "Presentation_ID" first.
+col_order <- c("Presentation_ID", names(edis_data)[names(edis_data) != "Presentation_ID"])
+edis_data <- edis_data[,col_order]
+```
+
+```{r EDIS - Save}
+#Save the data 
+write.csv(x = edis_data, file = paste0(proc_data_path, "EDIS_Presentations.csv"),
+          row.names = FALSE)
+```
+
+
+## FirstNet Data - ED Presentations
+
+
+```{r FN Pres - Load}
+#Load all FirstNet data 
+firstnet_data <- read_excel(paste0(raw_data_path, "FirstNet ED 2019-2021 deidentified.xlsx"), 
+                            sheet = 1)
+
+#Delete all the meaningless rows - artefact of how data was shared, not linked to quality issues.
+firstnet_data <- firstnet_data[!(firstnet_data$`Project ID` %in% 76), ]
+
+```
+
+```{r FN Pres - Presentation_ID}
+firstnet_data$combined_id <- paste0(firstnet_data$`Project ID`, "-", firstnet_data$`ED Arrival Date/Time`)
+firstnet_data <- firstnet_data[!duplicated(firstnet_data$combined_id),]
+firstnet_data$Presentation_ID <- paste0("P", (1e+6) + 1:nrow(firstnet_data)) #To make the IDs distinct from edis
+```
+
+```{r FN Pres - Filter}
+#' Function refining the passed firstnet data according to presenting prob and ed diagnosis
+#' @param FN_data - dataframe of firstnet presentations. ED diagnosis column should be pre-processed by scenario
+#' @param accept_codes - character vector of SNOMED codes justifying inclusion based on ED diagnosis
+refine_FN <- function(FN_data,            
+                      accept_codes) {
+  
+  #Do the filtering:
+  FN_refined <- FN_data[str_detect(string = FN_data$`ED Diagnosis`, 
+                                   pattern = paste0(accept_codes, collapse = "|")), ]
+  
+  #Delete any NA presentation IDs
+  FN_refined <- FN_refined[!is.na(FN_refined$`Project ID`),]
+  
+  #Return the refined data
+  return(FN_refined)
+  
+}
+
+#Defining static arguments for the refining function
+sno_codes <- c("278862001","91957002","161891005","424270008",
+                  "134407002","278860009","209571002","161894002",
+                  "26538006","20021007","135860001","279039007",
+                  "300956001","282766005","239880009","209565008",
+                  "279040009","34789001","61486003","203095000",
+                  "209548004","249921008","262965006","262975009",
+                  "247366003","307176005","307177001","24300005",
+                  "86269002","202794004","46960006","202735001",
+                  "128196005","23056005","18347007","309083007",
+                  "19284003","192970008","207957008","308758008",
+                  "426646004","212360005","11437003","284062002",
+                  "281933002","202728009","2304001","125871005",
+                  "125608002","207986006","230614002","202731005",
+                  "207993005", "44237008", "48956000", "65491009", 
+                  "129166009")
+
+#Filter by SNOMED codes, on presenting problem, and to non-NA diagnoses
+FN_sno <- refine_FN(FN_data = firstnet_data, accept_codes = sno_codes)
+FN_sno_bp <- FN_sno[FN_sno$PresentingProblem == "Back pain",]
+FN_sno_bp <- FN_sno_bp[!is.na(FN_sno_bp$`ED Diagnosis`),]
+
+```
+
+```{r FN Pres - Save}
+write.csv(x = FN_sno_bp, file = paste0(proc_data_path, "FirstNet_Presentations.csv"),
+          row.names = FALSE)
+```
+
+
+## FirstNet Data - Medications
+
+
+```{r FN Meds - Load}
+firstnet_meds <- read_excel(paste0(raw_data_path, "FirstNet Medications 2019-2021 deidentified.xlsx"),
+                            sheet = 2)
+
+#Clean up NA rows
+firstnet_meds <- firstnet_meds[!is.na(firstnet_meds$`ED Diagnosis`),]
+```
+
+```{r FN Meds - Link}
+#Create a presentation ID for linking and merge with the filtered presentation data - inherits the filtering
+firstnet_meds$combined_id <- paste0(firstnet_meds$`Project ID`, "-", firstnet_meds$`ED Arrival Date/Time`)
+firstnet_meds <- merge(x = firstnet_meds, y = FN_sno_bp[,c("combined_id", "Presentation_ID")])
+```
+
+```{r FN Meds - Save}
+#Save the result:
+write.csv(x = firstnet_meds, file = paste0(proc_data_path, "FirstNet_Medications.csv"),
+          row.names = FALSE)
+```
+
+
+## Costing Data
+
+```{r Costs - Load}
+#Load costing data and a helper file for mapping costs to categories
+cost_data <- read_excel(path = paste0(raw_data_path, "Costing 2019-2021 deidentified.xlsx"), sheet = 2)
+cost_cats <- read.csv(file = paste0(raw_data_path, "Cost Field Categorisation.csv"))
+
+#Fix the date field:
+cost_data$ED_Arrival_Date_Time <- ymd_hms(cost_data$ED_Arrival_Date_Time)
+```
+
+```{r Costs - Features}
+#Create some category fields:
+unique_cats <- unique(cost_cats$Matched.Category)
+for(cur_cat in unique_cats) {
+  
+  if(nchar(cur_cat) == 0) next
+  
+  #What fields are we about to look at?
+  cat_fields <- cost_cats$Fields[cost_cats$Matched.Category %in% cur_cat]
+  
+  #Rowsum to get the new cost category total:
+  cost_data[,str_replace_all(cur_cat, " ", "_")] <- rowSums(cost_data[,cat_fields], na.rm = T)
+  
+}
+
+#Reduce to aggregate fields - project id, arrival, ED overall costing, inpatient overall costing
+cost_cols <- c("Project_ID", "ED_Arrival_Date_Time", 
+               "ED TotalCost", "ED ABFRevenue", "ED PnL",
+               "Adm TotalCost", "Adm ABFRevenue", "Adm PnL")
+cat_cost_cols <- str_replace_all(unique_cats, " ", "_")
+cat_cost_cols <- str_subset(cat_cost_cols, pattern = ".")
+cost_data <- cost_data[,c(cost_cols, cat_cost_cols)]
+
+#Make names nicer (for matching with FN data and for ease of reading)
+colnames(cost_data) <- c("Project.ID", "ED.Arrival.Date.Time.Cost", 
+                         "ED_Cost", "ED_Revenue", "ED_PnL",
+                         "Inp_Cost", "Inp_Revenue", "Inp_PnL",
+                         cat_cost_cols)
+
+```
+
+
+```{r Costs - Save}
+#Save the result:
+write.csv(x = cost_data, file = paste0(proc_data_path, "Costs_Categorised.csv"),
+          row.names = FALSE)
+```
+

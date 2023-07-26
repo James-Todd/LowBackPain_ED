@@ -1,0 +1,508 @@
+---
+title: "Analyses - Tables"
+output: html_document
+---
+
+Note: table numbering may not match the final manuscript.
+
+#### Set up
+
+```{r Set up}
+
+#clean start:
+rm(list = ls());gc()
+
+#libraries
+library(stringr)      #For filtering based on ED diagnosis
+library(lubridate)    #For working with dates
+library(openxlsx)     #For converting Excel's numerics to date-times
+library(readxl)       #for loading data
+library(dplyr)
+library(tidyr)
+
+#file paths
+base_path <- "C:/Users/jtodd/OneDrive - Bond University/LBP/AJA/"
+util_path <- paste0(base_path, "Code/Table Functions/")
+raw_data_path <- paste0(base_path, "Data/Extracted/")
+table_data_path <- paste0(base_path, "Data/Pre-Analysis/")
+table_save_path <- paste0(base_path, "Results/")
+
+
+
+```
+
+
+#### Load Analysis-Ready Data
+
+```{r}
+#Nice RDS files with details for each presentations
+edis_data <- readRDS(file = paste0(table_data_path, "edis_table_data.rds"))
+fn_data <- readRDS(file = paste0(table_data_path, "firstnet_table_data.rds"))
+
+#Excel file of total ED presentations (numbers of presentations)
+total_ed_pres <- read_excel(paste0(raw_data_path, "Total ED Presentations.xlsx"))
+total_ed_pres$Year <- year(total_ed_pres$Month)
+total_ed_pres <- aggregate(x = Total ~ Year,data = total_ed_pres,FUN = sum)
+
+#Excel file of ED presentations 65 or over (numbers of presentations)
+older_ed_pres <- read.csv(paste0(raw_data_path, "ED Presentations Over 64.csv"))
+older_ed_pres <- na.omit(older_ed_pres[,1:2])
+colnames(older_ed_pres) <- c("Month", "Presentations")
+older_ed_pres$Year <- year(dmy(older_ed_pres$Month))
+older_ed_pres <- aggregate(x = Presentations ~ Year, data = older_ed_pres, FUN = sum)
+```
+
+
+#### Presentations Trends by Year
+
+```{r Table X Functions}
+source(file = paste0(util_path, "/Table X Functions.R"))
+```
+
+```{r Table X}
+#Define range of year columns to create:
+year_cols <- 2015:2021
+
+#Set up empty table to fill in
+table_x <- data.frame(Y2015 = rep(NA,13) , Y2016 = NA, Y2017 = NA, Y2018 = NA, 
+                      Y2019 = NA, Y2020 = NA, Y2021 = NA,
+                      row.names = c("Total_ED_Presentations", "Total_ED_Presentations_Old*", 
+                                    "Total_LBP_Presentations*", "Total_LBP_Presentations_Old**",
+                                    "Total_LBP_Presentations_Very_Old**", "NSLBP**", "Radicular**",
+                                    "Serious_Spinal_Pathology**","Arrival_QAS**", "Representations**",
+                                    "Physiotherapy_Review**", "Imaging_All**", "Opioid**"))
+
+#Fill in each row - probably a way to make a generic functin but it seems more complicated than necessary
+table_x["Total_ED_Presentations",] <- c(total_ed_pres$Total)
+table_x["Total_ED_Presentations_Old*",] <- c(older_ed_pres$Presentations) 
+table_x["Total_LBP_Presentations*",] <- sapply(X = year_cols, FUN = function(x) {
+  total_lbp_pres(EDIS = subset(edis_data, ED_Arrival_Year == x),
+                 FN = subset(fn_data, ED_Arrival_Year == x))
+})
+
+
+table_x["Total_LBP_Presentations_Old**",] <- sapply(X = year_cols, FUN = function(x) {
+  old_lbp_pres(EDIS = subset(edis_data, ED_Arrival_Year == x),
+                 FN = subset(fn_data, ED_Arrival_Year == x))
+})
+table_x["Total_LBP_Presentations_Very_Old**",] <- sapply(X = year_cols, FUN = function(x) {
+  very_old_lbp_pres(EDIS = subset(edis_data, ED_Arrival_Year == x),
+                 FN = subset(fn_data, ED_Arrival_Year == x))
+})
+table_x["NSLBP**",] <- sapply(X = year_cols, FUN = function(x) {
+  total_lbp_type(EDIS = subset(edis_data, ED_Arrival_Year == x),
+                 FN = subset(fn_data, ED_Arrival_Year == x),
+                 category = "NSLBP")
+})
+table_x["Radicular**",] <- sapply(X = year_cols, FUN = function(x) {
+  total_lbp_type(EDIS = subset(edis_data, ED_Arrival_Year == x),
+                 FN = subset(fn_data, ED_Arrival_Year == x),
+                 category = "Radicular")
+})
+table_x["Serious_Spinal_Pathology**",] <- sapply(X = year_cols, FUN = function(x) {
+  total_lbp_type(EDIS = subset(edis_data, ED_Arrival_Year == x),
+                 FN = subset(fn_data, ED_Arrival_Year == x),
+                 category = "Sinister")
+})
+table_x["Arrival_QAS**",] <- sapply(X = year_cols, FUN = function(x) {
+  total_amb_pres(EDIS = subset(edis_data, ED_Arrival_Year == x),
+                 FN = subset(fn_data, ED_Arrival_Year == x))
+})
+table_x["Representations**",] <- sapply(X = year_cols, FUN = function(x) {
+  total_represent(EDIS = subset(edis_data, ED_Arrival_Year == x),
+                  FN = subset(fn_data, ED_Arrival_Year == x))
+})
+table_x["Physiotherapy_Review**",] <- sapply(X = year_cols, FUN = function(x) {
+  total_physio_review(EDIS = subset(edis_data, ED_Arrival_Year == x),
+                      FN = subset(fn_data, ED_Arrival_Year == x))
+})
+table_x["Imaging_All**",] <- sapply(X = year_cols, FUN = function(x) {
+  total_imaging(EDIS = subset(edis_data, ED_Arrival_Year == x),
+                      FN = subset(fn_data, ED_Arrival_Year == x))
+})
+table_x["Opioid**",] <- sapply(X = year_cols, FUN = function(x) {
+  total_opioids(EDIS = subset(edis_data, ED_Arrival_Year == x),
+                FN = subset(fn_data, ED_Arrival_Year == x))
+})
+table_x["Surgery**",] <- sapply(X = year_cols, FUN = function(x) {
+  total_surgery(EDIS = subset(edis_data, ED_Arrival_Year == x),
+                FN = subset(fn_data, ED_Arrival_Year == x))
+})
+
+
+#Add percentages to the table: manual for those relative to total ED, loop for others
+
+#Relative to "Total_LBP_Presentations*" (done first because it then has a character term)
+for(i in str_subset(string = row.names(table_x), pattern = "\\*\\*")) {
+  table_x <- add_perc_table(Table = table_x, row_name = i, relative_row = "Total_LBP_Presentations*")
+}
+
+#Relative to total ED:
+table_x <- add_perc_table(Table = table_x, row_name = "Total_ED_Presentations_Old*",
+                          relative_row = "Total_ED_Presentations")
+table_x <- add_perc_table(Table = table_x, row_name = "Total_LBP_Presentations*",
+                          relative_row = "Total_ED_Presentations")
+
+
+
+#Save the table
+write.csv(x = table_x, file = paste0(table_save_path,"Trends_by_year.csv"))
+
+```
+
+
+
+#### Presentation Characteristics by Diagnosis and Age
+
+
+
+```{r Table 1 Functions}
+source(file = paste0(util_path, "Table 1 Functions.R"))
+```
+
+
+```{r Table 1}
+table_1 <- data.frame(NSLBP_Young = rep(NA,18), NSLBP_Old = NA, Radicular_Young = NA, 
+                      Radicular_Old = NA, Sinister_Young = NA, Sinister_Old = NA, 
+                      All_Young = NA,All_Old = NA, All_All = NA,
+                      row.names = c("Total_Presentations", "Gender", "Age", "Old_Adults", 
+                                    "Arrival_WalkIn","Arrival_Ambulance", "Arrival_Helicopter", 
+                                    "Triage_Cat1", "Triage_Cat2", "Triage_Cat3", "Triage_Cat4", 
+                                    "Triage_Cat5", "WeekendPres", "Working_Hour_Pres", "ED_LOS", 
+                                    "ED_Represent48", "HospitalAdmissions", "Hospital_LOS"))
+
+for(j in colnames(table_1)) {
+  
+  #Current column and subset parameters:
+  cur_col <- j
+  LBP_type <- str_extract(string = cur_col, pattern = "[^_]*")
+  age_group <- str_remove(string = cur_col, pattern = ".*_")
+  
+  #Fill in all the values for this column:
+  table_1["Total_Presentations", cur_col] <- adult_pres(EDIS = edis_data, FN = fn_data, 
+                                      category = LBP_type, age = age_group) #Originally adult function, now total pres
+  table_1["Gender", cur_col] <- female_pres(EDIS = edis_data, FN = fn_data, 
+                                            category = LBP_type, age = age_group)
+  table_1["Age", cur_col] <- age_pres(EDIS = edis_data, FN = fn_data, 
+                                      category = LBP_type, age = age_group)
+  
+  table_1["Old_Adults", cur_col] <- old_adult_pres(EDIS = edis_data, FN = fn_data, 
+                                      category = LBP_type, age = age_group)
+  table_1["Arrival_WalkIn", cur_col] <- arrival_mode_pres(EDIS = edis_data, FN = fn_data, category = LBP_type, 
+                                                          age = age_group, arrival_type = "walked in")
+  table_1["Arrival_Ambulance", cur_col] <- arrival_mode_pres(EDIS = edis_data, FN = fn_data, category = LBP_type, 
+                                                             age = age_group, arrival_type = "ambulance")
+  table_1["Arrival_Helicopter", cur_col] <- arrival_mode_pres(EDIS = edis_data, FN = fn_data, category = LBP_type, 
+                                                              age = age_group, arrival_type = "helicopter")
+  table_1["Triage_Cat1", cur_col] <- triage_scale_pres(EDIS = edis_data, FN = fn_data, category = LBP_type, 
+                                                              age = age_group, triage_scale = 1)
+  table_1["Triage_Cat2", cur_col] <- triage_scale_pres(EDIS = edis_data, FN = fn_data, category = LBP_type, 
+                                                              age = age_group, triage_scale = 2)
+  table_1["Triage_Cat3", cur_col] <- triage_scale_pres(EDIS = edis_data, FN = fn_data, category = LBP_type, 
+                                                              age = age_group, triage_scale = 3)
+  table_1["Triage_Cat4", cur_col] <- triage_scale_pres(EDIS = edis_data, FN = fn_data, category = LBP_type, 
+                                                              age = age_group, triage_scale = 4)
+  table_1["Triage_Cat5", cur_col] <- triage_scale_pres(EDIS = edis_data, FN = fn_data, category = LBP_type, 
+                                                              age = age_group, triage_scale = 5)
+  table_1["WeekendPres", cur_col] <- weekend_pres(EDIS = edis_data, FN = fn_data, 
+                                                category = LBP_type, age = age_group)
+  table_1["Working_Hour_Pres", cur_col] <- working_hour_pres(EDIS = edis_data, FN = fn_data, 
+                                                category = LBP_type, age = age_group)
+  table_1["ED_LOS", cur_col] <- ed_los_pres(EDIS = edis_data, FN = fn_data, 
+                                                category = LBP_type, age = age_group)
+  table_1["ED_Represent48", cur_col] <- represent_pres(EDIS = edis_data, FN = fn_data, 
+                                                category = LBP_type, age = age_group)
+  table_1["HospitalAdmissions", cur_col] <- hosp_admit_pres(EDIS = edis_data, FN = fn_data, 
+                                                category = LBP_type, age = age_group)
+  table_1["Hospital_LOS", cur_col] <- hosp_los_pres(EDIS = edis_data, FN = fn_data, 
+                                                category = LBP_type, age = age_group)
+  
+  
+}
+
+#Tweak the "All Presentations" row to compute percentages relative to the type of back pain.
+#Define a helper function
+calc_total_type <- function(full_table, prefix) {
+  
+  #Identify columns to use and current table values
+  cur_cols <- str_subset(string = colnames(full_table), pattern = prefix)
+  cur_vals <- table_1["Total_Presentations",cur_cols]
+
+  #Identify the total number for current presentation type
+  cur_counts <- as.numeric(str_remove(string = cur_vals, pattern = " .*"))
+  total_pres <- sum(cur_counts)
+  
+  #New values:
+  new_values <- paste0(cur_counts, " (", round(100*cur_counts / total_pres,1), ")")
+  
+  #Return the new values:
+  return(new_values)
+}
+
+#Apply the helper function to tweak the required rows:
+for(prefix_type in c("NSLBP", "Radicular", "Sinister", "All")){
+  
+  table_1["Total_Presentations",paste0(prefix_type, c("_Young", "_Old"))] <- calc_total_type(full_table = table_1[,-9], 
+                                                                                             prefix = prefix_type)
+  
+}
+
+
+#Save table 
+write.csv(x = table_1, file = paste0(table_save_path,"Pres_by_diag_and_age.csv"))
+
+```
+
+
+#### Medication usage by Diagnosis and Age
+
+```{r Table 2 Functions}
+source(file = paste0(util_path, "Table 2 Functions.R"))
+```
+
+```{r Table 2}
+table_2 <- data.frame(NSLBP_Young = rep(NA,11), NSLBP_Old = NA, Radicular_Young = NA, 
+                      Radicular_Old = NA, Sinister_Young = NA, Sinister_Old = NA, 
+                      All_Young = NA,All_Old = NA, All_All = NA,
+                      row.names = c("Analgesics","Paracetamol", "NSAIDs", "Opioids", "Opioids_comb", 
+                                    "Muscle_Relaxants", "Benzodiazepines", "Antiepileptics", 
+                                    "Antidepressants", "Oral_Corticosteroids", "Antipsychotics"))
+
+for(j in colnames(table_2)) {
+  
+  #Current column and subset parameters:
+  cur_col <- j
+  LBP_type <- str_extract(string = cur_col, pattern = "[^_]*")
+  age_group <- str_remove(string = cur_col, pattern = ".*_")
+  
+  #Fill in all the values for this column:
+  table_2["Analgesics", cur_col] <- med_pres(med_cat = "Analgesic", EDIS = edis_data, 
+                                             FN = fn_data, category = LBP_type, age = age_group)
+  table_2["Paracetamol", cur_col] <- med_pres(med_cat = "Paracetamol", EDIS = edis_data, 
+                                             FN = fn_data, category = LBP_type, age = age_group)
+  table_2["NSAIDs", cur_col] <- med_pres(med_cat = "NSAIDs", EDIS = edis_data, 
+                                             FN = fn_data, category = LBP_type, age = age_group)
+  table_2["Opioids", cur_col] <- med_pres(med_cat = "Opiate", EDIS = edis_data, 
+                                             FN = fn_data, category = LBP_type, age = age_group)
+  table_2["Opioids_comb", cur_col] <- med_pres(med_cat = "OpiateComb", EDIS = edis_data, 
+                                             FN = fn_data, category = LBP_type, age = age_group)
+  table_2["Muscle_Relaxants", cur_col] <- med_pres(med_cat = "Relaxant", EDIS = edis_data, 
+                                             FN = fn_data, category = LBP_type, age = age_group)
+  table_2["Benzodiazepines", cur_col] <- med_pres(med_cat = "Benzo", EDIS = edis_data, 
+                                             FN = fn_data, category = LBP_type, age = age_group)
+  table_2["Antiepileptics", cur_col] <- med_pres(med_cat = "Antiepileptic", EDIS = edis_data, 
+                                             FN = fn_data, category = LBP_type, age = age_group)
+  table_2["Antidepressants", cur_col] <- med_pres(med_cat = "Antidepressant", EDIS = edis_data, 
+                                             FN = fn_data, category = LBP_type, age = age_group)
+  table_2["Oral_Corticosteroids", cur_col] <- med_pres(med_cat = "OralCortic", EDIS = edis_data, 
+                                             FN = fn_data, category = LBP_type, age = age_group)
+  table_2["Antipsychotics", cur_col] <- med_pres(med_cat = "Antipsychotic", EDIS = edis_data, 
+                                             FN = fn_data, category = LBP_type, age = age_group)
+  
+}
+
+#Save table
+write.csv(x = table_2, file = paste0(table_save_path,"Medication_by_diag_and_age.csv"))
+```
+
+
+#### Imaging usage by Diagnosis and Age
+
+
+```{r Table 3 Functions}
+source(file = paste0(util_path, "Table 3 Functions.R"))
+```
+
+
+```{r Table 3}
+table_3 <- data.frame(NSLBP_Young = rep(NA,5), NSLBP_Old = NA, Radicular_Young = NA, 
+                      Radicular_Old = NA, Sinister_Young = NA, Sinister_Old = NA, 
+                      All_Young = NA,All_Old = NA, All_All = NA,
+                      row.names = c("Simple_Radiograph", "Advanced_Imaging", 
+                                    "MRI", "CT", "Any_Lumbar_Spine"))
+
+for(j in colnames(table_3)) {
+  
+  #Current column and subset parameters:
+  cur_col <- j
+  LBP_type <- str_extract(string = cur_col, pattern = "[^_]*")
+  age_group <- str_remove(string = cur_col, pattern = ".*_")
+  
+  #Fill in all the values for this column:
+  table_3["Simple_Radiograph", cur_col] <- image_pres(image_cat = "XR", EDIS = edis_data, 
+                                             FN = fn_data, category = LBP_type, age = age_group)
+  table_3["Advanced_Imaging", cur_col] <- advanced_image_pres(EDIS = edis_data, FN = fn_data, 
+                                                      category = LBP_type, age = age_group)
+  table_3["MRI", cur_col] <- image_pres(image_cat = "MR", EDIS = edis_data, 
+                                             FN = fn_data, category = LBP_type, age = age_group)
+  table_3["CT", cur_col] <- image_pres(image_cat = "CT", EDIS = edis_data, 
+                                             FN = fn_data, category = LBP_type, age = age_group)
+  table_3["Any_Lumbar_Spine", cur_col] <- image_pres(image_cat = "Imaging", EDIS = edis_data, 
+                                             FN = fn_data, category = LBP_type, age = age_group)
+  
+  
+}
+
+#Save table 3
+write.csv(x = table_3, file = paste0(table_save_path,"Imaging_by_diag_and_age.csv"))
+
+```
+
+
+#### Pathology Tests and Spinal Surgery by Diagnosis and Age
+
+
+
+```{r Table 4 and 5 Functions}
+source(file = paste0(util_path, "Table 4 and 5 Functions.R"))
+```
+
+
+
+```{r Table 4}
+table_4 <- data.frame(NSLBP_Young = rep(NA,1), NSLBP_Old = NA, Radicular_Young = NA, 
+                      Radicular_Old = NA, Sinister_Young = NA, Sinister_Old = NA, 
+                      All_Young = NA,All_Old = NA, All_All = NA,
+                      row.names = c("Pathology"))
+
+for(j in colnames(table_4)) {
+  
+  #Current column and subset parameters:
+  cur_col <- j
+  LBP_type <- str_extract(string = cur_col, pattern = "[^_]*")
+  age_group <- str_remove(string = cur_col, pattern = ".*_")
+  
+  #Fill in all the values for this column:
+  table_4["Pathology", cur_col] <- pathology_pres(EDIS = edis_data, FN = fn_data, 
+                                                  category = LBP_type, age = age_group)
+ 
+  
+  
+}
+
+#Save table
+write.csv(x = table_4, file = paste0(table_save_path,"Pathology_tests_by_diag_and_age.csv"))
+
+```
+
+
+```{r Table 5}
+table_5 <- data.frame(NSLBP_Young = rep(NA,1), NSLBP_Old = NA, Radicular_Young = NA, 
+                      Radicular_Old = NA, Sinister_Young = NA, Sinister_Old = NA, 
+                      All_Young = NA,All_Old = NA, All_All = NA,
+                      row.names = c("Surgery"))
+
+for(j in colnames(table_5)) {
+  
+  #Current column and subset parameters:
+  cur_col <- j
+  LBP_type <- str_extract(string = cur_col, pattern = "[^_]*")
+  age_group <- str_remove(string = cur_col, pattern = ".*_")
+  
+  #Fill in all the values for this column:
+  table_5["Surgery", cur_col] <- surgery_pres(EDIS = edis_data, FN = fn_data, 
+                                                  category = LBP_type, age = age_group)
+ 
+  
+  
+}
+
+#Save table
+write.csv(x = table_5, file = paste0(table_save_path,"Surgery_by_diag_and_age.csv"))
+
+```
+
+
+
+#### Costing Tables
+
+
+```{r}
+#Several categories of presentations considered#
+#First set: presentations that didn't have an inpatient admission, no time in short stay, and have ED costing
+ed_pure_cost <- fn_data[fn_data$HospAdmit_Flag == 0 & fn_data$ED.SS.LOS.Hrs == 0 & !is.na(fn_data$ED_PnL),]
+
+#Second set: presentations that didn't have an inpatient admission, had time in short stay, and have ED costing
+ss_pure_cost <- fn_data[fn_data$HospAdmit_Flag == 0 & fn_data$ED.SS.LOS.Hrs > 0 & !is.na(fn_data$ED_PnL),]
+
+#Third set: presentations that didn't have an inpatient admission and had ED costing (no constraint on short stay)
+no_inpat_cost <- fn_data[fn_data$HospAdmit_Flag == 0 & !is.na(fn_data$ED_PnL),]
+
+#Fourth set: all presentations that did have inpatient admission and had ED costing
+yes_inpat_cost <- fn_data[fn_data$HospAdmit_Flag == 1 & !is.na(fn_data$ED_PnL),]
+
+#Fifth set: all presentations with ED costing (no constraint on short stay or inpatient admissions)
+all_cost <- fn_data[!is.na(fn_data$ED_PnL),]
+
+
+#For all sets, replace missing Inp_Cost with zero:
+ed_pure_cost <- replace_na(ed_pure_cost, list("Inp_Cost" = 0))
+ss_pure_cost <- replace_na(ss_pure_cost, list("Inp_Cost" = 0))
+no_inpat_cost <- replace_na(no_inpat_cost, list("Inp_Cost" = 0))
+yes_inpat_cost <- replace_na(yes_inpat_cost, list("Inp_Cost" = 0))
+all_cost <- replace_na(all_cost, list("Inp_Cost" = 0))
+  
+#For all sets, create a total cost column:
+ed_pure_cost$Total_Cost <- ed_pure_cost$ED_Cost 
+ss_pure_cost$Total_Cost <- ss_pure_cost$ED_Cost + ss_pure_cost$Inp_Cost
+no_inpat_cost$Total_Cost <- no_inpat_cost$ED_Cost + no_inpat_cost$Inp_Cost
+yes_inpat_cost$Total_Cost <- yes_inpat_cost$ED_Cost + yes_inpat_cost$Inp_Cost
+all_cost$Total_Cost <- all_cost$ED_Cost + all_cost$Inp_Cost
+
+
+#Combinations for which costs are summarised
+combos <- expand.grid(Age = c("Young", "Old", "All"),
+                      Cond = c("NSLBP", "Radicular", "Sinister", "All"))
+cost_cols <- c("Cost_Pure_ED", "Cost_Pure_SS","Cost_No_Inpat", "Cost_Yes_Inpat", "Cost_All")
+set_nums <- c("Pres_Pure_ED", "Pres_Pure_SS","Pres_No_Inpat", "Pres_Yes_Inpat", "Pres_All")
+combos[,cost_cols] <- "ph"
+
+
+#Loop through the combinations
+for(i in 1:nrow(combos)) {
+  
+  #Current iteration
+  cur_age <- combos$Age[i]
+  cur_cond <- combos$Cond[i]
+  
+  #Current data
+  cur_pure_ed <- data_subset(EDIS = edis_data, FN = ed_pure_cost, category = cur_cond, age = cur_age)[[1]]
+  cur_pure_ss <- data_subset(EDIS = edis_data, FN = ss_pure_cost, category = cur_cond, age = cur_age)[[1]]
+  cur_no_inpat <- data_subset(EDIS = edis_data, FN = no_inpat_cost, category = cur_cond, age = cur_age)[[1]]
+  cur_yes_inpat <- data_subset(EDIS = edis_data, FN = yes_inpat_cost, category = cur_cond, age = cur_age)[[1]]
+  cur_all <- data_subset(EDIS = edis_data, FN = all_cost, category = cur_cond, age = cur_age)[[1]]
+  
+  #Summarise it:
+  # Summarise it: #Flag: changing to do median and IQR
+  combos[i,cost_cols] <- c(paste0(round(mean(cur_pure_ed$Total_Cost),2), " (",
+                                  round(sd(cur_pure_ed$Total_Cost),2), ")"),
+                           paste0(round(mean(cur_pure_ss$Total_Cost),2), " (",
+                                  round(sd(cur_pure_ss$Total_Cost),2), ")"),
+                           paste0(round(mean(cur_no_inpat$Total_Cost),2), " (",
+                                  round(sd(cur_no_inpat$Total_Cost),2), ")"),
+                           paste0(round(mean(cur_yes_inpat$Total_Cost),2), " (",
+                                  round(sd(cur_yes_inpat$Total_Cost),2), ")"),
+                           paste0(round(mean(cur_all$Total_Cost),2), " (",
+                                  round(sd(cur_all$Total_Cost),2), ")"))
+
+  
+  combos[i, set_nums] <- c(nrow(cur_pure_ed),nrow(cur_pure_ss),nrow(cur_no_inpat), 
+                           nrow(cur_yes_inpat), nrow(cur_all))
+  
+}
+
+#Transform, reorder and save:
+costing_table <- t(combos[,c(cost_cols, set_nums)])
+colnames(costing_table) <- paste(combos$Cond, combos$Age, sep = "_")
+costing_table <- costing_table[c(set_nums[1], cost_cols[1],
+                                 set_nums[2], cost_cols[2],
+                                 set_nums[3], cost_cols[3],
+                                 set_nums[4], cost_cols[4],
+                                 set_nums[5], cost_cols[5]),]
+
+
+#Save costing table
+write.csv(x = costing_table, file = paste0(table_save_path,"Costing_by_services_and_diag_and_age.csv"))
+```
+
+
