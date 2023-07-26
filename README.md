@@ -1,2 +1,2 @@
-# LowBackPain_ED
-The code and file structure associated with research into the emergency presentations of older persons with low back pain.
+# Emergency presentations for older persons with low back pain: an increasing clinical and economic challenge
+This repository contains the code files and folder structure associated with a research project (see title). 
